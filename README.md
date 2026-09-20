@@ -148,20 +148,20 @@ docker compose -f docker-compose.agent.yml up -d  # Agent
 
 ## 版本与发布
 
-版本号只有一个来源：根目录的 [`VERSION`](VERSION) 文件，当前为 `0.0.1-beta.01`。
+版本号只有一个来源：根目录的 [`VERSION`](VERSION) 文件，当前为 `0.0.1-beta.02`。
 
 版本号格式（CI 会校验，不符合直接构建失败）：`x.y.z`，可选 `-` 加预发布后缀。
 
 | 形式 | 示例 | 说明 |
 |---|---|---|
 | 正式版本 | `0.0.1` | 会更新 `latest` 标签 |
-| 预发布 | `0.0.1-beta`、`0.0.1-beta.2`、`0.0.1-beta.01`、`0.0.1-rc.1` | 只打版本号与 sha 标签，**不覆盖 `latest`** |
+| 预发布 | `0.0.1-beta`、`0.0.1-beta.2`、`0.0.1-beta.02`、`0.0.1-rc.1` | 只打版本号与 sha 标签，**不覆盖 `latest`** |
 
-> `0.0.1-beta.01` 这种带前导零的序号不是严格 SemVer（`beta.1` 才是），
+> `0.0.1-beta.02` 这种带前导零的序号不是严格 SemVer（`beta.2` 才是），
 > 因此 Docker 官方 metadata 动作的 semver 标签会跳过它；镜像的精确版本标签由 raw 规则保证，不受影响。
 
 - 本地构建：`build.ps1` / `build.sh` 读取 `VERSION` 并通过 ldflags 注入面板与 Agent
-- 面板：`dfpanel -version`，或启动日志 `DFPanel 0.0.1-beta.01 已启动`，或界面侧边栏底部的版本号（预发布版本会以橙色标出）
+- 面板：`dfpanel -version`，或启动日志 `DFPanel 0.0.1-beta.02 已启动`，或界面侧边栏底部的版本号（预发布版本会以橙色标出）
 - Agent：随心跳上报，显示在「Agent 管理」列表的版本列
 - 容器镜像：`Dockerfile` / `Dockerfile.agent` 在构建阶段读取 `VERSION` 注入
 

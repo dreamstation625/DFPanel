@@ -5,9 +5,9 @@ name: Docker
 #   - 推送 v* 版本 tag（要求 tag 与 VERSION 一致）
 #   - 手动触发（强制重新构建）
 #
-# 版本号格式：0.0.1（正式）或 0.0.1-beta / 0.0.1-beta.2 / 0.0.1-beta.01 / 0.0.1-rc.1（预发布）。
+# 版本号格式：0.0.1（正式）或 0.0.1-beta / 0.0.1-beta.2 / 0.0.1-beta.02 / 0.0.1-rc.1（预发布）。
 # 预发布版本只打版本号与 sha 标签，不覆盖 latest。
-# 注意：0.0.1-beta.01 这类带前导零的序号不是严格 SemVer，docker/metadata-action 的
+# 注意：0.0.1-beta.02 这类带前导零的序号不是严格 SemVer，docker/metadata-action 的
 # semver 类型会跳过它；精确版本标签由 type=raw 保证，不受影响。
 #
 # 依赖仓库 Environment「DOCKERHUB」：
@@ -52,7 +52,7 @@ jobs:
           fi
           # 主版本必须为 x.y.z；预发布后缀允许字母/数字/点/连字符（如 beta、beta.2、beta.01、rc.1）
           if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
-            echo "VERSION 格式不正确：$VERSION（应形如 0.0.1 或 0.0.1-beta.01）"
+            echo "VERSION 格式不正确：$VERSION（应形如 0.0.1 或 0.0.1-beta.02）"
             exit 1
           fi
 

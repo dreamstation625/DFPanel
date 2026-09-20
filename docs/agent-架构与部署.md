@@ -202,16 +202,16 @@ dfpanel -agent-image myrepo/dfpanel-agent:0.2.0   # 生成安装命令时使用�
 
 ### 6.1 版本号与镜像发布
 
-版本号只有一个来源：根目录 `VERSION` 文件，从 `0.0.1` 起，当前为 `0.0.1-beta.01`。
+版本号只有一个来源：根目录 `VERSION` 文件，从 `0.0.1` 起，当前为 `0.0.1-beta.02`。
 
 | 形式 | 示例 | 镜像标签 | `latest` |
 |---|---|---|---|
 | 正式版本 | `0.0.1` | `0.0.1`、`v0.0.1`、`sha-xxxxxxx` | 更新 |
-| 预发布 | `0.0.1-beta`、`0.0.1-beta.2`、`0.0.1-beta.01`、`0.0.1-rc.1` | `0.0.1-beta.01`、`v0.0.1-beta.01`、`sha-xxxxxxx` | 不动 |
+| 预发布 | `0.0.1-beta`、`0.0.1-beta.2`、`0.0.1-beta.02`、`0.0.1-rc.1` | `0.0.1-beta.02`、`v0.0.1-beta.02`、`sha-xxxxxxx` | 不动 |
 
 `VERSION` 会在 CI 的 `verify` 任务里做格式校验（`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$`），格式不符直接失败，避免打出非法镜像标签。
 
-注意 `0.0.1-beta.01` 不是严格 SemVer（前导零的数字标识不合法，`beta.1` 才合法），所以 Docker 官方 `metadata-action` 的 `type=semver` 会跳过这类版本号；镜像的版本标签由 `type=raw,value=<VERSION>` 兜底，标签内容与 `VERSION` 完全一致。
+注意 `0.0.1-beta.02` 不是严格 SemVer（前导零的数字标识不合法，`beta.2` 才合法），所以 Docker 官方 `metadata-action` 的 `type=semver` 会跳过这类版本号；镜像的版本标签由 `type=raw,value=<VERSION>` 兜底，标签内容与 `VERSION` 完全一致。
 
 | 位置 | 注入方式 | 查看方式 |
 |---|---|---|
@@ -219,7 +219,7 @@ dfpanel -agent-image myrepo/dfpanel-agent:0.2.0   # 生成安装命令时使用�
 | Agent 二进制 | 同上，`-ldflags "-X dfpanel/internal/agent.Version=<ver>"` | 「Agent 管理」列表的版本列（随心跳上报） |
 | 面板 / Agent 镜像 | Dockerfile 构建阶段 `-ldflags "-X ...=$(cat VERSION)"` | `docker image inspect`、`dfpanel -version` |
 
-未注入时面板与 Agent 的版本均为 `dev`。面板版本号通过 `GET /api/init-status` 一并返回（`{"initialized": bool, "version": "0.0.1-beta.01"}`），前端在侧边栏底部展示，含 `-` 的预发布版本会单独标色。
+未注入时面板与 Agent 的版本均为 `dev`。面板版本号通过 `GET /api/init-status` 一并返回（`{"initialized": bool, "version": "0.0.1-beta.02"}`），前端在侧边栏底部展示，含 `-` 的预发布版本会单独标色。
 
 镜像发布由 `.github/workflows/docker.yml` 完成：
 
