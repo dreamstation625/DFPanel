@@ -5,9 +5,14 @@
 # ---------- 1. 前端 ----------
 FROM node:22-alpine AS web
 WORKDIR /web
+# 用 npm ci 严格按 lock 安装，构建可复现。
+# 注意：package-lock.json 必须包含所有平台的 rollup / esbuild 原生包
+# （@rollup/rollup-linux-x64-musl、@esbuild/linux-x64 等）。
+# npm 会按当前平台裁剪可选依赖，因此不要用 --omit=optional 生成 lock，
+# 否则容器内 install 会缺少原生模块，vite build 直接失败。
 COPY web/package.json ./
-COPY web/package-lock.json* ./
-RUN npm install
+COPY web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY web/ ./
 RUN npm run build
 

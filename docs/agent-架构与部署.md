@@ -250,6 +250,29 @@ git tag v0.0.2 && git push origin main --tags
 
 镜像不在 Docker Hub 时，用 `-agent-image` / `DFPANEL_AGENT_IMAGE` 指定，面板生成的 docker run / compose 安装命令会随之更新。
 
+### 6.2 前端依赖与 package-lock.json
+
+面板镜像的前端阶段用 `npm ci` 严格按 `web/package-lock.json` 安装。注意 npm 的一个行为：**生成 lock 时会按当前平台裁剪可选依赖**，所以只在一台机器上生成的 lock 可能缺少其它平台的原生包。
+
+典型症状：本机（Windows）构建正常，容器里却报
+
+```
+process "/bin/sh -c npm run build" did not complete successfully: exit code: 1
+  Error: Cannot find module '@rollup/rollup-linux-x64-musl'
+```
+
+排查与修复：
+
+```bash
+# 检查 lock 里是否有当前平台需要（或全平台）的原生包
+node -e "const l=require('./package-lock.json');console.log(Object.keys(l.packages).filter(k=>/@rollup|@esbuild/.test(k)))"
+
+# lock 不完整时，删掉重新解析一次（会补齐所有平台的条目，已锁定的依赖版本不变）
+cd web && rm package-lock.json && npm install --package-lock-only
+```
+
+一份完整的 lock 应包含 `@rollup/rollup-linux-x64-musl`（alpine 用）、`@rollup/rollup-linux-x64-gnu`、`@esbuild/linux-x64` 等所有平台条目（本项目为 153 条，缺平台包时只有 100 条）。`npm ci` 会在容器里自动挑选当前平台需要的那个。不要用 `--omit=optional` 生成 lock。
+
 ## 7. 接口一览
 
 Agent 面（签名鉴权）：`POST /api/agent/register`、`POST /api/agent/heartbeat`、`POST /api/agent/commands`、`POST /api/agent/report`、`GET /api/agent/ws`

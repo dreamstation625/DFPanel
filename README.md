@@ -88,6 +88,11 @@ Linux / macOS 用 `./build.sh`，参数等价（`--skip-frontend --agent --all-p
 
 版本号统一取自根目录 `VERSION` 文件，构建时注入二进制（面板注入 `main.version`，Agent 注入 `dfpanel/internal/agent.Version`）；直接 `go build` 不带 ldflags 时为 `dev`。
 
+> 前端依赖由 `web/package-lock.json` 锁定，容器里用 `npm ci` 安装。
+> 改动前端依赖后请用普通 `npm install` 重新生成 lock：npm 会按当前平台裁剪可选依赖，
+> 若 lock 里缺少 `@rollup/rollup-linux-x64-musl`、`@esbuild/linux-x64` 等平台原生包，
+> 容器内 `vite build` 会因找不到原生模块而失败（面板镜像构建常见坑）。
+
 ### 2. 启动面板
 
 ```bash
