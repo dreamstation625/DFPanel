@@ -1,0 +1,55 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: #f5f7fa;
+  color: #303133;
+}
+
+.page {
+  padding: 20px;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.page-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* 头部按钮较多时自动换行，避免被挤压 */
+.page-header .actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.page-header .actions > * {
+  margin-left: 0 !important;
+}
+
+/* 窗口较窄时主区域横向滚动，而不是挤压表单 */
+.el-main {
+  overflow-x: auto;
+}
+
+/* 表单标签与输入区留出间距 */
+.el-form-item__label {
+  padding-right: 12px;
+}

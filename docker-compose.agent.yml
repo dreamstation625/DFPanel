@@ -1,0 +1,34 @@
+# DFPanel Agent 部署（同一容器可同时托管 frps 与 frpc）
+# 启动：docker compose -f docker-compose.agent.yml up -d
+# 令牌请在面板「客户端节点 / Agent」页面创建后复制，或直接用面板生成的 docker run 指令
+
+services:
+  dfpanel-agent:
+    image: dfpanel/agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: dfpanel-agent
+    restart: unless-stopped
+
+    # host 网络最简单：frps 监听宿主端口、frpc 可直接穿透宿主服务
+    # bridge 模式请把隧道的 localIP 填成 host.docker.internal 或宿主内网 IP
+    network_mode: host
+
+    environment:
+      DFPANEL_URL: "http://192.168.1.10:8080"
+      DFPANEL_NODE_KEY: "在此粘贴 nodeKey"
+      DFPANEL_NODE_SECRET: "在此粘贴 secret"
+      # 角色：frps / frpc / frps,frpc
+      DFPANEL_ROLES: "frps,frpc"
+      # process = 容器内直接跑 frps/frpc 子进程（默认）；docker = 用 docker CLI 起容器
+      DFPANEL_RUNTIME: "process"
+      TZ: "Asia/Shanghai"
+
+    volumes:
+      - agent-data:/var/lib/dfpanel-agent
+      # DFPANEL_RUNTIME=docker 时需要挂载 docker.sock
+      # - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  agent-data:

@@ -1,0 +1,55 @@
+# DFPanel Agent 镜像：一个容器同时可托管 frps 与 frpc
+# 构建：docker build -f Dockerfile.agent -t dfpanel/agent:latest .
+# 运行：docker run -d --network host \
+#        -e DFPANEL_URL=http://panel:8080 -e DFPANEL_NODE_KEY=xxx -e DFPANEL_NODE_SECRET=yyy \
+#        -e DFPANEL_ROLES=frps,frpc -v dfpanel-agent-data:/var/lib/dfpanel-agent \
+#        dfpanel/agent:latest
+#
+# 说明：
+#   DFPANEL_RUNTIME=process（默认）：容器内直接拉起 frps / frpc 子进程（镜像已内置二进制）
+#   DFPANEL_RUNTIME=docker          ：通过 docker CLI 以容器方式运行 frps / frpc，
+#                                     需要额外挂载 /var/run/docker.sock
+
+# ---------- 1. frps / frpc 二进制 ----------
+FROM alpine:3.20 AS frp
+ARG FRP_VERSION=latest
+ARG TARGETARCH=amd64
+RUN apk add --no-cache curl tar
+RUN set -eux; \
+    if [ "$FRP_VERSION" = "latest" ]; then \
+      VER=$(curl -fsSL https://api.github.com/repos/fatedier/frp/releases/latest \
+        | sed -n 's/.*"tag_name":[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' | head -n1); \
+    else VER="$FRP_VERSION"; fi; \
+    case "$TARGETARCH" in amd64) ARCH=amd64;; arm64) ARCH=arm64;; *) ARCH=arm;; esac; \
+    echo "frp version: $VER ($ARCH)"; \
+    curl -fsSL -o /tmp/frp.tar.gz \
+      "https://github.com/fatedier/frp/releases/download/v${VER}/frp_${VER}_linux_${ARCH}.tar.gz"; \
+    mkdir -p /tmp/frp /out; \
+    tar -xzf /tmp/frp.tar.gz -C /tmp/frp --strip-components=1; \
+    install -m 0755 /tmp/frp/frps /out/frps; \
+    install -m 0755 /tmp/frp/frpc /out/frpc
+
+# ---------- 2. 编译 Agent ----------
+FROM golang:1.26-alpine AS server
+RUN apk add --no-cache git
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/agent ./cmd/agent
+
+# ---------- 3. 运行 ----------
+FROM alpine:3.20
+# docker-cli：DFPANEL_RUNTIME=docker 时需要
+RUN apk add --no-cache ca-certificates tzdata curl tar docker-cli
+ENV DFPANEL_DATA_DIR=/var/lib/dfpanel-agent \
+    DFPANEL_RUNTIME=process \
+    DFPANEL_ROLES=frpc \
+    TZ=Asia/Shanghai
+COPY --from=server /out/agent /usr/local/bin/dfpanel-agent
+COPY --from=frp /out/frps /usr/local/bin/frps
+COPY --from=frp /out/frpc /usr/local/bin/frpc
+VOLUME ["/var/lib/dfpanel-agent"]
+ENTRYPOINT ["dfpanel-agent"]

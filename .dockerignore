@@ -1,0 +1,10 @@
+.git
+.gitignore
+data/
+web/node_modules/
+web/dist/
+dfpanel.exe
+dfpanel
+dist/
+*.log
+.codebuddy/

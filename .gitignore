@@ -1,0 +1,40 @@
+# ---- 构建产物 ----
+/dfpanel
+/dfpanel.exe
+/dfpanel-agent
+/dfpanel-agent.exe
+/dist/
+/web/dist/
+/web/node_modules/
+
+# ---- 运行时数据（SQLite、frps 配置与日志、frp 二进制缓存）----
+/data/
+/data-*/
+/tmp-agent*/
+*.log
+
+# ---- 依赖 ----
+node_modules/
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- 临时与备份文件 ----
+*.tmp
+*.bak
+*.out
+*.err
+*~
+
+# ---- 本地环境变量（含密钥，切勿提交）----
+.env
+.env.local
+*.local
+
+# ---- 测试与调试残留 ----
+.smoke.json
+coverage.out

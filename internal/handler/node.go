@@ -1,0 +1,380 @@
+package handler
+
+import (
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"dfpanel/internal/agenthub"
+	"dfpanel/internal/config"
+	"dfpanel/internal/database"
+	"dfpanel/internal/frp"
+	"dfpanel/internal/model"
+	"dfpanel/internal/proto"
+)
+
+// NodeHandler 节点（frpc）管理：节点自身永远由远端 Agent 托管
+type NodeHandler struct {
+	hub *agenthub.Hub
+	cfg *config.Config
+}
+
+// NewNodeHandler 创建节点处理器
+func NewNodeHandler(hub *agenthub.Hub, cfg *config.Config) *NodeHandler {
+	return &NodeHandler{hub: hub, cfg: cfg}
+}
+
+// List GET /api/nodes
+func (h *NodeHandler) List(c *gin.Context) {
+	var list []model.Node
+	database.DB.Order("id asc").Find(&list)
+	for i := range list {
+		list[i].Status = h.statusOf(list[i])
+	}
+	c.JSON(http.StatusOK, list)
+}
+
+// Get GET /api/nodes/:id
+func (h *NodeHandler) Get(c *gin.Context) {
+	var n model.Node
+	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+		return
+	}
+	n.Status = h.statusOf(n)
+	c.JSON(http.StatusOK, n)
+}
+
+// Create POST /api/nodes
+func (h *NodeHandler) Create(c *gin.Context) {
+	var n model.Node
+	if err := c.ShouldBindJSON(&n); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法：" + err.Error()})
+		return
+	}
+	n.ID = 0
+	if n.Name == "" {
+		n.Name = "节点-" + time.Now().Format("0102150405")
+	}
+	if n.NodeKey == "" {
+		n.NodeKey = randomToken(16)
+	}
+	if n.Secret == "" {
+		n.Secret = randomToken(32)
+	}
+	if err := database.DB.Create(&n).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建失败：" + err.Error()})
+		return
+	}
+	n.Status = h.statusOf(n)
+	c.JSON(http.StatusOK, n)
+}
+
+// Update PUT /api/nodes/:id
+func (h *NodeHandler) Update(c *gin.Context) {
+	var old model.Node
+	if err := database.DB.First(&old, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+		return
+	}
+	var req model.Node
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
+		return
+	}
+	req.ID = old.ID
+	req.CreatedAt = old.CreatedAt
+	req.NodeKey = old.NodeKey
+	req.Secret = old.Secret
+	req.Status = old.Status
+
+	if err := database.DB.Save(&req).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败：" + err.Error()})
+		return
+	}
+	req.Status = h.statusOf(req)
+	c.JSON(http.StatusOK, req)
+}
+
+// Delete DELETE /api/nodes/:id
+func (h *NodeHandler) Delete(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
+		return
+	}
+	if err := database.DB.Delete(&model.Node{}, id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
+}
+
+// Preview GET /api/nodes/:id/config 预览 frpc.json
+func (h *NodeHandler) Preview(c *gin.Context) {
+	var n model.Node
+	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+		return
+	}
+	content, err := h.buildConfig(&n)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成配置失败：" + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"content": content})
+}
+
+// Apply POST /api/nodes/:id/apply 生成配置并下发给托管 Agent（失败由 Agent 自动回滚）
+func (h *NodeHandler) Apply(c *gin.Context) {
+	var n model.Node
+	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+		return
+	}
+	if n.AgentID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请先为该节点指定托管 Agent"})
+		return
+	}
+
+	content, err := h.buildConfig(&n)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成配置失败：" + err.Error()})
+		return
+	}
+
+	version := nextVersion(proto.TargetNode, n.ID)
+	recordConfigVersion(proto.TargetNode, n.ID, version, content)
+
+	res, err := dispatch(h.hub, &model.AgentCommand{
+		AgentID:    n.AgentID,
+		Type:       proto.CmdApply,
+		TargetType: proto.TargetNode,
+		TargetID:   n.ID,
+		Payload:    content,
+		Version:    version,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if res.Queued {
+		c.JSON(http.StatusOK, gin.H{"message": res.Message, "queued": true, "version": version})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message":    res.Message,
+		"ok":         res.OK,
+		"rolledBack": res.RolledBack,
+		"version":    version,
+		"running":    res.Running,
+	})
+}
+
+// Start POST /api/nodes/:id/start
+func (h *NodeHandler) Start(c *gin.Context) {
+	h.control(c, proto.CmdStart)
+}
+
+// Stop POST /api/nodes/:id/stop
+func (h *NodeHandler) Stop(c *gin.Context) {
+	h.control(c, proto.CmdStop)
+}
+
+// Restart POST /api/nodes/:id/restart
+func (h *NodeHandler) Restart(c *gin.Context) {
+	h.control(c, proto.CmdRestart)
+}
+
+// Log GET /api/nodes/:id/log
+func (h *NodeHandler) Log(c *gin.Context) {
+	var n model.Node
+	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+		return
+	}
+	if n.AgentID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "节点未绑定 Agent"})
+		return
+	}
+	res, err := dispatch(h.hub, &model.AgentCommand{
+		AgentID:    n.AgentID,
+		Type:       proto.CmdLog,
+		TargetType: proto.TargetNode,
+		TargetID:   n.ID,
+		TimeoutMs:  15000,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if res.Queued {
+		c.JSON(http.StatusOK, gin.H{"content": "", "message": res.Message, "queued": true})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"content": res.Content, "running": res.Running})
+}
+
+func (h *NodeHandler) control(c *gin.Context, cmdType string) {
+	var n model.Node
+	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+		return
+	}
+	if n.AgentID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "节点未绑定 Agent"})
+		return
+	}
+	res, err := dispatch(h.hub, &model.AgentCommand{
+		AgentID:    n.AgentID,
+		Type:       cmdType,
+		TargetType: proto.TargetNode,
+		TargetID:   n.ID,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if res.Queued {
+		c.JSON(http.StatusOK, gin.H{"message": res.Message, "queued": true})
+		return
+	}
+	if !res.OK {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": res.Message})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": res.Message, "running": res.Running})
+}
+
+// Versions GET /api/nodes/:id/versions 查看托管 Agent 上保存的历史配置版本
+func (h *NodeHandler) Versions(c *gin.Context) {
+	var n model.Node
+	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+		return
+	}
+
+	dbList := loadVersionRecords(proto.TargetNode, n.ID)
+	if n.AgentID == 0 || !h.hub.Online(n.AgentID) {
+		c.JSON(http.StatusOK, gin.H{"fromAgent": false, "versions": dbList, "message": "Agent 离线，仅显示面板记录"})
+		return
+	}
+
+	res, err := dispatch(h.hub, &model.AgentCommand{
+		AgentID:    n.AgentID,
+		Type:       proto.CmdVersions,
+		TargetType: proto.TargetNode,
+		TargetID:   n.ID,
+		TimeoutMs:  15000,
+	})
+	if err != nil || res.Queued {
+		c.JSON(http.StatusOK, gin.H{"fromAgent": false, "versions": dbList})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"fromAgent": true,
+		"current":   res.Running,
+		"versions":  mergeVersions(res.Versions, dbList),
+	})
+}
+
+// Rollback POST /api/nodes/:id/rollback 回滚到指定历史版本（由托管 Agent 应用并校验）
+func (h *NodeHandler) Rollback(c *gin.Context) {
+	var n model.Node
+	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+		return
+	}
+	if n.AgentID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "节点未绑定 Agent，无法回滚"})
+		return
+	}
+
+	var req struct {
+		Version int `json:"version"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Version <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请指定要回滚到的版本号"})
+		return
+	}
+
+	target, err := findVersionRecord(proto.TargetNode, n.ID, req.Version)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "面板中未找到该版本的配置记录"})
+		return
+	}
+
+	version := nextVersion(proto.TargetNode, n.ID)
+	recordConfigVersion(proto.TargetNode, n.ID, version, target.Content)
+
+	res, err := dispatch(h.hub, &model.AgentCommand{
+		AgentID:    n.AgentID,
+		Type:       proto.CmdRollback,
+		TargetType: proto.TargetNode,
+		TargetID:   n.ID,
+		Payload:    rollbackPayload(req.Version),
+		Version:    version,
+		TimeoutMs:  150000,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if res.Queued {
+		c.JSON(http.StatusOK, gin.H{"message": res.Message, "queued": true, "version": version})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message":    res.Message,
+		"ok":         res.OK,
+		"rolledBack": res.RolledBack,
+		"unverified": res.Unverified,
+		"version":    version,
+		"running":    res.Running,
+	})
+}
+
+// buildConfig 生成节点对应的 frpc.json
+func (h *NodeHandler) buildConfig(node *model.Node) (string, error) {
+	var server model.FrpsServer
+	hasServer := false
+	if node.ServerID > 0 {
+		if err := database.DB.First(&server, node.ServerID).Error; err == nil {
+			hasServer = true
+		}
+	}
+	var proxies []model.Proxy
+	database.DB.Where("node_id = ?", node.ID).Find(&proxies)
+
+	if !hasServer {
+		return frp.BuildFrpcFromNode(node, nil, proxies, h.publicAddr())
+	}
+	return frp.BuildFrpcFromNode(node, &server, proxies, h.publicAddr())
+}
+
+func (h *NodeHandler) publicAddr() string {
+	if h.cfg != nil {
+		return h.cfg.PublicURL
+	}
+	return ""
+}
+
+// statusOf 结合 Agent 心跳缓存判断节点运行状态
+func (h *NodeHandler) statusOf(n model.Node) string {
+	if n.AgentID == 0 {
+		return "unbound"
+	}
+	if !h.hub.Online(n.AgentID) {
+		return "agent_offline"
+	}
+	st, ok := h.hub.State(n.AgentID, proto.TargetNode, n.ID)
+	if !ok {
+		return n.Status
+	}
+	if st.Running {
+		return "running"
+	}
+	return "stopped"
+}
