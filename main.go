@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -12,8 +13,18 @@ import (
 	"dfpanel/internal/router"
 )
 
+// version 由构建时注入：-ldflags "-X main.version=x.y.z"；未注入时为 dev
+var version = "dev"
+
 func main() {
+	// -version 直接输出到 stdout，便于脚本解析（不带日志时间戳）
+	if len(os.Args) > 1 && (os.Args[1] == "-version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("dfpanel %s\n", version)
+		return
+	}
+
 	cfg := config.Load()
+	cfg.Version = version
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		log.Fatalf("创建数据目录失败: %v", err)
@@ -29,7 +40,7 @@ func main() {
 
 	r := router.Setup(cfg)
 
-	log.Printf("DFPanel 已启动，请访问 http://localhost%s", cfg.Listen)
+	log.Printf("DFPanel %s 已启动，请访问 http://localhost%s", version, cfg.Listen)
 	if err := r.Run(cfg.Listen); err != nil {
 		log.Fatalf("启动服务失败: %v", err)
 	}

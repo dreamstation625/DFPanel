@@ -26,6 +26,22 @@
 .EXAMPLE
     .\build.ps1 -TargetOS linux -TargetArch amd64
         交叉编译 Linux amd64 版本
+
+.EXAMPLE
+    .\build.ps1 -Agent
+        编译 Agent，产出 .\dist\dfpanel-agent-<os>-<arch>[.exe]
+
+.EXAMPLE
+    .\build.ps1 -Agent -AllPlatforms
+        一次产出 linux/amd64、linux/arm64、windows/amd64、darwin/arm64 四个 Agent
+
+.EXAMPLE
+    .\build.ps1 -Docker -Agent -Image myrepo/dfpanel-agent:v1
+        构建 Agent 镜像并指定标签
+
+.NOTES
+    版本号取自根目录 VERSION 文件，构建时注入二进制（面板注入 main.version，
+    Agent 注入 dfpanel/internal/agent.Version）；未注入时为 dev。
 #>
 [CmdletBinding()]
 param(
@@ -55,7 +71,7 @@ param(
     [switch]$Docker,
     # Docker 镜像标签
     [string]$Image,
-    # 一次性交叉编译常用平台（linux/windows × amd64/arm64）
+    # 一次性交叉编译常用平台（linux/windows/darwin 的 amd64/arm64）
     [switch]$AllPlatforms
 )
 
@@ -72,6 +88,27 @@ function Write-WarnMsg { param($Message) Write-Host "    [警告] $Message" -For
 function Test-Tool {
     param([string]$Name)
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+# 运行原生命令（npm / go / docker）。
+# PowerShell 5.1 在 $ErrorActionPreference='Stop' 下会把其它程序写到 stderr 的普通日志
+# 当成终止性错误（vite 的告警、go 的编译信息都会走 stderr），这里统一下降到 Continue，
+# 再依据退出码判断成功与否。
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments
+    )
+
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $FilePath @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
+    }
+    finally {
+        $ErrorActionPreference = $prev
+    }
+    return $LASTEXITCODE
 }
 
 function Invoke-FrontendBuild {
@@ -96,13 +133,11 @@ function Invoke-FrontendBuild {
     try {
         if (-not (Test-Path (Join-Path $webDir "node_modules"))) {
             Write-Step "安装前端依赖 (npm install)"
-            & $npmCmd install
-            if ($LASTEXITCODE -ne 0) { throw "npm install 失败" }
+            if ((Invoke-Native $npmCmd "install") -ne 0) { throw "npm install 失败" }
         }
 
         Write-Step "编译前端 (npm run build)"
-        & $npmCmd run build
-        if ($LASTEXITCODE -ne 0) { throw "npm run build 失败" }
+        if ((Invoke-Native $npmCmd "run" "build") -ne 0) { throw "npm run build 失败" }
     }
     finally {
         Pop-Location
@@ -125,11 +160,13 @@ function Invoke-BackendBuild {
     $label = if ($Agent) { "Agent" } else { "服务端" }
     $base = if ($Agent) { "dfpanel-agent" } else { "dfpanel" }
 
-    if (-not $OutFile) {
-        $ext = if ($OS -eq "windows") { ".exe" } else { "" }
+    $ext = if ($OS -eq "windows") { ".exe" } else { "" }
+    # 多平台构建时每次调用都要重算产物名，否则多次构建会写到同一个文件
+    if ($AllPlatforms -or -not $script:OutFile) {
         if ($Agent -or $AllPlatforms) {
             New-Item -ItemType Directory -Force -Path (Join-Path $root "dist") | Out-Null
-            $script:OutFile = Join-Path $root "dist" "$base-$OS-$Arch$ext"
+            # PowerShell 5.1 的 Join-Path 只接受两个位置参数，需嵌套调用
+            $script:OutFile = Join-Path (Join-Path $root "dist") "$base-$OS-$Arch$ext"
         }
         else {
             $script:OutFile = Join-Path $root "$base$ext"
@@ -138,14 +175,21 @@ function Invoke-BackendBuild {
 
     Write-Step "编译$label ($OS/$Arch)"
 
+    # 版本号统一取自根目录 VERSION 文件，构建时注入到二进制
+    $ver = "dev"
+    $verFile = Join-Path $root "VERSION"
+    if (Test-Path $verFile) { $ver = (Get-Content $verFile -Raw -Encoding UTF8).Trim() }
+    $ldflags = if ($Agent) { "-X dfpanel/internal/agent.Version=$ver" } else { "-X main.version=$ver" }
+
     $env:GOOS = $OS
     $env:GOARCH = $Arch
     $env:CGO_ENABLED = "0"
 
     Push-Location $root
     try {
-        & go build -trimpath -o $script:OutFile $pkg
-        if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
+        if ((Invoke-Native go "build" "-trimpath" "-ldflags" $ldflags "-o" $script:OutFile $pkg) -ne 0) {
+            throw "go build 失败"
+        }
     }
     finally {
         Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
@@ -161,16 +205,16 @@ function Invoke-DockerBuild {
     }
 
     if ($Agent) {
-        $tag = if ($Image) { $Image } else { "dfpanel/agent:latest" }
+        $tag = if ($Image) { $Image } else { "dreamstation625/dfpanel-agent:latest" }
         Write-Step "构建 Agent 镜像 $tag"
-        & docker build -f (Join-Path $root "Dockerfile.agent") -t $tag $root
+        $code = Invoke-Native docker "build" "-f" (Join-Path $root "Dockerfile.agent") "-t" $tag $root
     }
     else {
-        $tag = if ($Image) { $Image } else { "dfpanel/panel:latest" }
+        $tag = if ($Image) { $Image } else { "dreamstation625/dfpanel:latest" }
         Write-Step "构建面板镜像 $tag"
-        & docker build -f (Join-Path $root "Dockerfile") -t $tag $root
+        $code = Invoke-Native docker "build" "-f" (Join-Path $root "Dockerfile") "-t" $tag $root
     }
-    if ($LASTEXITCODE -ne 0) { throw "docker build 失败" }
+    if ($code -ne 0) { throw "docker build 失败" }
     Write-Ok "镜像已构建: $tag"
 }
 
@@ -199,6 +243,10 @@ try {
         Write-Host ""
         Write-Host "镜像构建完成。" -ForegroundColor Green
         exit 0
+    }
+
+    if ($AllPlatforms -and $OutFile) {
+        throw "-OutFile 与 -AllPlatforms 不能同时使用：多平台产物需要各自独立的文件名。"
     }
 
     if ($AllPlatforms) {

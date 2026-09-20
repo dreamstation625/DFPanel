@@ -4,7 +4,7 @@
 
 services:
   dfpanel-agent:
-    image: dfpanel/agent:latest
+    image: dreamstation625/dfpanel-agent:latest
     build:
       context: .
       dockerfile: Dockerfile.agent

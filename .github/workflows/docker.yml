@@ -1,0 +1,209 @@
+name: Docker
+
+# 版本号变更时才构建并推送镜像：
+#   - push 到 main 且改动了 VERSION（或本 workflow 文件）
+#   - 推送 v* 版本 tag（要求 tag 与 VERSION 一致）
+#   - 手动触发（强制重新构建）
+#
+# 版本号格式：0.0.1（正式）或 0.0.1-beta / 0.0.1-beta.2 / 0.0.1-beta.01 / 0.0.1-rc.1（预发布）。
+# 预发布版本只打版本号与 sha 标签，不覆盖 latest。
+# 注意：0.0.1-beta.01 这类带前导零的序号不是严格 SemVer，docker/metadata-action 的
+# semver 类型会跳过它；精确版本标签由 type=raw 保证，不受影响。
+#
+# 依赖仓库 Environment「DOCKERHUB」：
+#   variable DOCKERHUB_USERNAME
+#   secret   DOCKERHUB_TOKEN
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - VERSION
+      - .github/workflows/docker.yml
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: 版本检查与编译
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      prerelease: ${{ steps.ver.outputs.prerelease }}
+      latest: ${{ steps.ver.outputs.latest }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 读取并校验版本号
+        id: ver
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d ' \n\r' < VERSION)"
+          if [ -z "$VERSION" ]; then
+            echo "VERSION 文件为空，请先写入版本号"
+            exit 1
+          fi
+          # 主版本必须为 x.y.z；预发布后缀允许字母/数字/点/连字符（如 beta、beta.2、beta.01、rc.1）
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
+            echo "VERSION 格式不正确：$VERSION（应形如 0.0.1 或 0.0.1-beta.01）"
+            exit 1
+          fi
+
+          PRERELEASE=false
+          case "$VERSION" in
+            *-*) PRERELEASE=true ;;
+          esac
+
+          # 预发布版本不覆盖 latest，避免用户拉到未稳定的构建
+          LATEST=false
+          if [ "$PRERELEASE" = "false" ]; then
+            case "${GITHUB_REF}" in
+              refs/tags/*) LATEST=true ;;                        # 正式 tag（v0.0.1）
+              "refs/heads/${DEFAULT_BRANCH}") LATEST=true ;;      # 默认分支（main）
+            esac
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "本次构建版本：$VERSION（预发布=$PRERELEASE，更新 latest=$LATEST）"
+
+      - name: 校验 tag 与 VERSION 是否一致
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$TAG" != "${{ steps.ver.outputs.version }}" ]; then
+            echo "tag $GITHUB_REF_NAME 与 VERSION ${{ steps.ver.outputs.version }} 不一致"
+            exit 1
+          fi
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 生成前端占位目录（go:embed 需要 dist 存在）
+        run: mkdir -p web/dist && touch web/dist/index.html
+
+      - name: 编译（注入版本号）
+        run: |
+          go build -trimpath \
+            -ldflags "-X main.version=${{ steps.ver.outputs.version }} -X dfpanel/internal/agent.Version=${{ steps.ver.outputs.version }}" \
+            ./...
+
+      - name: 静态检查
+        run: go vet ./...
+
+  panel:
+    name: 面板镜像
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: DOCKERHUB
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 QEMU（多架构构建）
+        uses: docker/setup-qemu-action@v3
+
+      - name: 安装 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ vars.DOCKERHUB_USERNAME }}/dfpanel
+          # latest 由 verify 任务判定（仅正式版本），这里关闭自动生成
+          flavor: |
+            latest=false
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=raw,value=${{ needs.verify.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.verify.outputs.latest }}
+            type=sha,format=short,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=DFPanel
+            org.opencontainers.image.description=frp 可视化控制面板（面板与 frps/frpc 分离部署）
+            org.opencontainers.image.version=${{ needs.verify.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=panel
+          cache-to: type=gha,mode=max,scope=panel
+
+  agent:
+    name: Agent 镜像
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: DOCKERHUB
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 QEMU（多架构构建）
+        uses: docker/setup-qemu-action@v3
+
+      - name: 安装 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ vars.DOCKERHUB_USERNAME }}/dfpanel-agent
+          # latest 由 verify 任务判定（仅正式版本），这里关闭自动生成
+          flavor: |
+            latest=false
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=raw,value=${{ needs.verify.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.verify.outputs.latest }}
+            type=sha,format=short,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=DFPanel Agent
+            org.opencontainers.image.description=DFPanel 托管 Agent（同时承载 frps 与 frpc）
+            org.opencontainers.image.version=${{ needs.verify.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.agent
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=agent
+          cache-to: type=gha,mode=max,scope=agent

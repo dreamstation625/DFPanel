@@ -11,8 +11,8 @@
 #   ./build.sh --listen :9000 --run  指定监听端口并启动
 #   ./build.sh --agent              编译 Agent 程序（cmd/agent）
 #   ./build.sh --agent --all-platforms   一次编译 Agent 的多平台产物到 dist/
-#   ./build.sh --docker             构建面板镜像 dfpanel/panel:latest
-#   ./build.sh --docker --agent     构建 Agent 镜像 dfpanel/agent:latest
+#   ./build.sh --docker             构建面板镜像 dreamstation625/dfpanel:latest
+#   ./build.sh --docker --agent     构建 Agent 镜像 dreamstation625/dfpanel-agent:latest
 #   ./build.sh --docker --image my/panel:v1   指定镜像标签
 #
 set -euo pipefail
@@ -108,18 +108,28 @@ build_backend() {
         fi
     fi
 
+    # 版本号统一取自根目录 VERSION 文件，构建时注入到二进制
+    local ver="dev"
+    [[ -f "$ROOT/VERSION" ]] && ver="$(tr -d ' \n\r' < "$ROOT/VERSION")"
+    local ldflags
+    if [[ "$AGENT" -eq 1 ]]; then
+        ldflags="-X dfpanel/internal/agent.Version=$ver"
+    else
+        ldflags="-X main.version=$ver"
+    fi
+
     (cd "$ROOT" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-        go build -trimpath -o "$OUT_FILE" "$pkg")
-    ok "$label 已生成: $OUT_FILE"
+        go build -trimpath -ldflags "$ldflags" -o "$OUT_FILE" "$pkg")
+    ok "$label 已生成: $OUT_FILE (版本 $ver)"
 }
 
 build_docker() {
     has docker || { echo "未检测到 docker，请先安装 Docker。"; exit 1; }
 
-    local dockerfile="$ROOT/Dockerfile" tag="${IMAGE:-dfpanel/panel:latest}"
+    local dockerfile="$ROOT/Dockerfile" tag="${IMAGE:-dreamstation625/dfpanel:latest}"
     if [[ "$AGENT" -eq 1 ]]; then
         dockerfile="$ROOT/Dockerfile.agent"
-        tag="${IMAGE:-dfpanel/agent:latest}"
+        tag="${IMAGE:-dreamstation625/dfpanel-agent:latest}"
     fi
 
     step "构建镜像 $tag"

@@ -79,17 +79,20 @@ Windows：
 .\build.ps1                       # 前端 + 后端 -> dfpanel.exe
 .\build.ps1 -SkipFrontend         # 只编译后端（复用现有 web/dist）
 .\build.ps1 -Agent                # 编译 Agent -> dist/dfpanel-agent-<os>-<arch>
-.\build.ps1 -Agent -AllPlatforms  # 一次产出 linux/windows x amd64/arm64
-.\build.ps1 -Docker               # 构建面板镜像 dfpanel/panel:latest
-.\build.ps1 -Docker -Agent        # 构建 Agent 镜像 dfpanel/agent:latest
+.\build.ps1 -Agent -AllPlatforms  # 一次产出 linux/windows/darwin 共 4 个平台
+.\build.ps1 -Docker               # 构建面板镜像 dreamstation625/dfpanel:latest
+.\build.ps1 -Docker -Agent        # 构建 Agent 镜像 dreamstation625/dfpanel-agent:latest
 ```
 
 Linux / macOS 用 `./build.sh`，参数等价（`--skip-frontend --agent --all-platforms --docker --image`）。
+
+版本号统一取自根目录 `VERSION` 文件，构建时注入二进制（面板注入 `main.version`，Agent 注入 `dfpanel/internal/agent.Version`）；直接 `go build` 不带 ldflags 时为 `dev`。
 
 ### 2. 启动面板
 
 ```bash
 ./dfpanel -listen :8080 -data ./data -public-url http://1.2.3.4:8080
+./dfpanel -version                 # 查看面板版本号
 ```
 
 | 参数 | 环境变量 | 默认值 | 说明 |
@@ -97,10 +100,12 @@ Linux / macOS 用 `./build.sh`，参数等价（`--skip-frontend --agent --all-p
 | `-listen` | `DFPANEL_LISTEN` | `:8080` | 监听地址 |
 | `-data` | `DFPANEL_DATA_DIR` | `./data` | 数据目录（SQLite、配置、日志） |
 | `-public-url` | `DFPANEL_PUBLIC_URL` | 按请求推断 | 面板对外地址，用于生成安装命令与 frpc 连接地址 |
+| `-agent-image` | `DFPANEL_AGENT_IMAGE` | `dreamstation625/dfpanel-agent:latest` | 生成 Docker 安装命令时使用的 Agent 镜像 |
 | `-jwt-secret` | `DFPANEL_JWT_SECRET` | 自动生成并持久化 | JWT 签名密钥 |
 | `-token-expire` | — | `24` | 登录有效期（小时） |
+| `-version` | — | — | 打印版本号后退出 |
 
-首次访问进入初始化向导，设置管理员账号后登录使用。
+首次访问进入初始化向导，设置管理员账号后登录使用。面板版本号也会展示在侧边栏底部（来自 `GET /api/init-status`）。
 
 ### 3. 添加 Agent
 
@@ -117,7 +122,7 @@ docker run -d --name dfpanel-agent --restart unless-stopped \
   -e DFPANEL_RUNTIME=process \
   -v dfpanel-agent-data:/var/lib/dfpanel-agent \
   --network host \
-  dfpanel/agent:latest
+  dreamstation625/dfpanel-agent:latest
 ```
 
 二进制（面板会生成带令牌的完整命令）：
@@ -136,6 +141,51 @@ docker compose -f docker-compose.agent.yml up -d  # Agent
 
 面板数据放在 `./data`；Linux 推荐 `network_mode: host`，Windows / macOS 改用 `ports` 映射（见 `docker-compose.yml` 注释）。
 
+## 版本与发布
+
+版本号只有一个来源：根目录的 [`VERSION`](VERSION) 文件，当前为 `0.0.1-beta.01`。
+
+版本号格式（CI 会校验，不符合直接构建失败）：`x.y.z`，可选 `-` 加预发布后缀。
+
+| 形式 | 示例 | 说明 |
+|---|---|---|
+| 正式版本 | `0.0.1` | 会更新 `latest` 标签 |
+| 预发布 | `0.0.1-beta`、`0.0.1-beta.2`、`0.0.1-beta.01`、`0.0.1-rc.1` | 只打版本号与 sha 标签，**不覆盖 `latest`** |
+
+> `0.0.1-beta.01` 这种带前导零的序号不是严格 SemVer（`beta.1` 才是），
+> 因此 Docker 官方 metadata 动作的 semver 标签会跳过它；镜像的精确版本标签由 raw 规则保证，不受影响。
+
+- 本地构建：`build.ps1` / `build.sh` 读取 `VERSION` 并通过 ldflags 注入面板与 Agent
+- 面板：`dfpanel -version`，或启动日志 `DFPanel 0.0.1-beta.01 已启动`，或界面侧边栏底部的版本号（预发布版本会以橙色标出）
+- Agent：随心跳上报，显示在「Agent 管理」列表的版本列
+- 容器镜像：`Dockerfile` / `Dockerfile.agent` 在构建阶段读取 `VERSION` 注入
+
+发布镜像由 GitHub Actions 完成（[`.github/workflows/docker.yml`](.github/workflows/docker.yml)）：
+
+| 触发条件 | 行为 |
+|---|---|
+| push 到 `main` 且改动 `VERSION`（或 workflow 文件） | 构建并推送 `amd64` / `arm64` 双架构镜像 |
+| 推送 `v*` tag | 要求 tag 与 `VERSION` 一致，镜像打 `0.0.1` 这类版本标签 |
+| 手动 `workflow_dispatch` | 强制重新构建 |
+
+镜像地址：`<DOCKERHUB_USERNAME>/dfpanel` 与 `<DOCKERHUB_USERNAME>/dfpanel-agent`，默认用户名取自仓库 Environment `DOCKERHUB` 的 `DOCKERHUB_USERNAME` 变量与 `DOCKERHUB_TOKEN` 密钥。
+
+发布新版本：
+
+```bash
+# 预发布（先给测试同学用，latest 不动）
+echo "0.0.2-beta" > VERSION
+git add VERSION && git commit -m "chore: 0.0.2-beta"
+git push origin main
+
+# 正式版
+echo "0.0.2" > VERSION
+git add VERSION && git commit -m "chore: 升级版本号至 0.0.2"
+git tag v0.0.2 && git push origin main --tags
+```
+
+如果镜像不在 Docker Hub（或使用私有仓库），启动面板时用 `-agent-image` / `DFPANEL_AGENT_IMAGE` 指定，生成的安装命令会跟着变化。
+
 ## 目录结构
 
 ```
@@ -151,6 +201,8 @@ internal/
 web/                        Vue 3 + Element Plus 前端（vite 构建，产物嵌入二进制）
 docs/                       架构与部署文档
 Dockerfile  Dockerfile.agent  docker-compose*.yml
+.github/workflows/          CI：按 VERSION 构建并推送双架构镜像
+VERSION                     版本号（构建时注入二进制与镜像）
 build.ps1  build.sh
 ```
 

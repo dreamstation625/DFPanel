@@ -45,7 +45,7 @@ func (h *InstallHandler) AgentInstallCommand(c *gin.Context) {
 	}
 	osName := strings.ToLower(c.DefaultQuery("os", "linux"))
 	runtime := strings.ToLower(c.DefaultQuery("runtime", "process"))
-	c.JSON(http.StatusOK, buildInstallCommands(h.panelURL(c), &agent, osName, runtime))
+	c.JSON(http.StatusOK, h.buildInstallCommands(h.panelURL(c), &agent, osName, runtime))
 }
 
 // NodeInstallCommand GET /api/nodes/:id/install-command 生成节点（frpc）所在 Agent 的安装命令
@@ -66,7 +66,7 @@ func (h *InstallHandler) NodeInstallCommand(c *gin.Context) {
 	}
 	osName := strings.ToLower(c.DefaultQuery("os", "linux"))
 	runtime := strings.ToLower(c.DefaultQuery("runtime", "process"))
-	c.JSON(http.StatusOK, buildInstallCommands(h.panelURL(c), &agent, osName, runtime))
+	c.JSON(http.StatusOK, h.buildInstallCommands(h.panelURL(c), &agent, osName, runtime))
 }
 
 // ScriptSh GET /install.sh
@@ -141,7 +141,7 @@ func (h *InstallHandler) panelURL(c *gin.Context) string {
 }
 
 // buildInstallCommands 生成二进制 / Docker / Compose 三种安装指令
-func buildInstallCommands(panelURL string, agent *model.Agent, osName, runtime string) installCommands {
+func (h *InstallHandler) buildInstallCommands(panelURL string, agent *model.Agent, osName, runtime string) installCommands {
 	roles := strings.TrimSpace(agent.Roles)
 	if roles == "" {
 		roles = "frpc"
@@ -149,6 +149,7 @@ func buildInstallCommands(panelURL string, agent *model.Agent, osName, runtime s
 	if runtime != "docker" {
 		runtime = "process"
 	}
+	image := h.agentImage()
 
 	res := installCommands{
 		PanelURL: panelURL,
@@ -157,9 +158,17 @@ func buildInstallCommands(panelURL string, agent *model.Agent, osName, runtime s
 		Roles:    roles,
 	}
 	res.Binary = binaryInstallCommand(panelURL, agent, osName, roles, runtime)
-	res.Docker = dockerRunCommand(panelURL, agent, roles, runtime)
-	res.Compose = dockerComposeSnippet(panelURL, agent, roles, runtime)
+	res.Docker = dockerRunCommand(panelURL, agent, roles, runtime, image)
+	res.Compose = dockerComposeSnippet(panelURL, agent, roles, runtime, image)
 	return res
+}
+
+// agentImage 生成 Docker 安装命令使用的 Agent 镜像，可经 -agent-image 覆盖
+func (h *InstallHandler) agentImage() string {
+	if h.cfg != nil && strings.TrimSpace(h.cfg.AgentImage) != "" {
+		return strings.TrimSpace(h.cfg.AgentImage)
+	}
+	return config.DefaultAgentImage
 }
 
 func binaryInstallCommand(panelURL string, agent *model.Agent, osName, roles, runtime string) string {
@@ -174,7 +183,7 @@ func binaryInstallCommand(panelURL string, agent *model.Agent, osName, roles, ru
 	}
 }
 
-func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime string) string {
+func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime, image string) string {
 	lines := []string{
 		"docker run -d --name dfpanel-agent --restart unless-stopped \\",
 		fmt.Sprintf("  -e DFPANEL_URL=%s \\", panelURL),
@@ -189,19 +198,19 @@ func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime string
 	}
 	lines = append(lines,
 		"  --network host \\",
-		"  dfpanel/agent:latest",
+		"  "+image,
 	)
 	return strings.Join(lines, "\n")
 }
 
-func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime string) string {
+func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, image string) string {
 	volumes := "    volumes:\n      - dfpanel-agent-data:/var/lib/dfpanel-agent\n"
 	if runtime == "docker" {
 		volumes += "      - /var/run/docker.sock:/var/run/docker.sock\n"
 	}
 	return fmt.Sprintf(`services:
   dfpanel-agent:
-    image: dfpanel/agent:latest
+    image: %s
     container_name: dfpanel-agent
     restart: unless-stopped
     network_mode: host
@@ -212,5 +221,5 @@ func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime st
       DFPANEL_ROLES: %s
       DFPANEL_RUNTIME: %s
 %svolumes:
-  dfpanel-agent-data:`, panelURL, agent.NodeKey, agent.Secret, roles, runtime, volumes)
+  dfpanel-agent-data:`, image, panelURL, agent.NodeKey, agent.Secret, roles, runtime, volumes)
 }

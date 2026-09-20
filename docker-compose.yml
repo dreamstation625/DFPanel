@@ -4,7 +4,7 @@
 
 services:
   dfpanel:
-    image: dfpanel/panel:latest
+    image: dreamstation625/dfpanel:latest
     build:
       context: .
       dockerfile: Dockerfile

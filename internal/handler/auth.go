@@ -23,10 +23,15 @@ func NewAuthHandler(cfg *config.Config) *AuthHandler {
 }
 
 // InitStatus GET /api/init-status 查询系统是否已初始化
+// 同时返回面板版本号，供前端在登录页与侧边栏展示
 func (h *AuthHandler) InitStatus(c *gin.Context) {
 	var count int64
 	database.DB.Model(&model.User{}).Count(&count)
-	c.JSON(http.StatusOK, gin.H{"initialized": count > 0})
+	version := "dev"
+	if h.cfg != nil && h.cfg.Version != "" {
+		version = h.cfg.Version
+	}
+	c.JSON(http.StatusOK, gin.H{"initialized": count > 0, "version": version})
 }
 
 type initReq struct {

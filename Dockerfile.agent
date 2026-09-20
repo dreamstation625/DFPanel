@@ -1,9 +1,9 @@
 # DFPanel Agent 镜像：一个容器同时可托管 frps 与 frpc
-# 构建：docker build -f Dockerfile.agent -t dfpanel/agent:latest .
+# 构建：docker build -f Dockerfile.agent -t dreamstation625/dfpanel-agent:latest .
 # 运行：docker run -d --network host \
 #        -e DFPANEL_URL=http://panel:8080 -e DFPANEL_NODE_KEY=xxx -e DFPANEL_NODE_SECRET=yyy \
 #        -e DFPANEL_ROLES=frps,frpc -v dfpanel-agent-data:/var/lib/dfpanel-agent \
-#        dfpanel/agent:latest
+#        dreamstation625/dfpanel-agent:latest
 #
 # 说明：
 #   DFPANEL_RUNTIME=process（默认）：容器内直接拉起 frps / frpc 子进程（镜像已内置二进制）
@@ -38,7 +38,8 @@ RUN go mod download
 COPY . .
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/agent ./cmd/agent
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+    -ldflags "-X dfpanel/internal/agent.Version=$(cat VERSION)" -o /out/agent ./cmd/agent
 
 # ---------- 3. 运行 ----------
 FROM alpine:3.20

@@ -1,6 +1,6 @@
 # DFPanel 面板镜像（一体化：面板 + 内置 frps 二进制）
-# 构建：docker build -t dfpanel/panel:latest .
-# 运行：docker run -d --network host -v dfpanel-data:/data -e DFPANEL_PUBLIC_URL=http://1.2.3.4:8080 dfpanel/panel:latest
+# 构建：docker build -t dreamstation625/dfpanel:latest .
+# 运行：docker run -d --network host -v dfpanel-data:/data -e DFPANEL_PUBLIC_URL=http://1.2.3.4:8080 dreamstation625/dfpanel:latest
 
 # ---------- 1. 前端 ----------
 FROM node:22-alpine AS web
@@ -38,7 +38,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /web/dist ./web/dist
-RUN CGO_ENABLED=0 go build -trimpath -o /out/dfpanel .
+# 版本号取自根目录 VERSION 文件，注入二进制
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$(cat VERSION)" -o /out/dfpanel .
 
 # ---------- 4. 运行 ----------
 FROM alpine:3.20

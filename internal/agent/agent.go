@@ -16,8 +16,8 @@ import (
 	"dfpanel/internal/proto"
 )
 
-// Version Agent 版本
-const Version = "0.1.0"
+// Version Agent 版本，构建时可通过 -ldflags "-X dfpanel/internal/agent.Version=x.y.z" 注入
+var Version = "dev"
 
 const (
 	heartbeatInterval = 30 * time.Second

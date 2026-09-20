@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
+import { authApi } from '@/api'
 import { DOC_MENU } from '@/utils/docs'
 
 const route = useRoute()
@@ -9,6 +10,25 @@ const router = useRouter()
 
 const active = computed(() => route.path)
 const username = computed(() => localStorage.getItem('dfpanel_user') || 'admin')
+
+// 面板版本号（构建时注入），显示在侧边栏底部
+const panelVersion = ref('')
+const versionLabel = computed(() => {
+  const v = panelVersion.value
+  if (!v) return ''
+  return /^\d/.test(v) ? `v${v}` : v
+})
+/** 预发布版本（0.0.2-beta）单独标色，避免与正式版混淆 */
+const isPrerelease = computed(() => panelVersion.value.includes('-'))
+
+onMounted(async () => {
+  try {
+    const res = await authApi.initStatus()
+    panelVersion.value = res.version || ''
+  } catch {
+    panelVersion.value = ''
+  }
+})
 
 function onSelect(index: string) {
   // 官方文档以外部链接形式放在菜单里，直接新窗口打开
@@ -60,6 +80,14 @@ async function onCommand(cmd: string) {
           </el-menu-item>
         </el-sub-menu>
       </el-menu>
+      <div
+        v-if="versionLabel"
+        class="version"
+        :class="{ 'is-pre': isPrerelease }"
+        :title="isPrerelease ? `DFPanel ${panelVersion}（预发布版本）` : `DFPanel ${panelVersion}`"
+      >
+        {{ versionLabel }}<span v-if="isPrerelease" class="pre-tag">预发布</span>
+      </div>
     </el-aside>
 
     <el-container>
@@ -93,6 +121,8 @@ async function onCommand(cmd: string) {
 .aside {
   background: #1f2d3d;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .logo {
@@ -106,8 +136,32 @@ async function onCommand(cmd: string) {
 }
 
 .menu {
+  flex: 1;
   border-right: none;
   background: transparent;
+}
+
+/* 版本号固定在侧边栏底部 */
+.version {
+  padding: 12px 16px 16px;
+  text-align: center;
+  font-size: 12px;
+  color: #7d8b9c;
+  letter-spacing: 0.5px;
+}
+
+/* 预发布版本（如 0.0.2-beta）用醒目色提示 */
+.version.is-pre {
+  color: #e6a23c;
+}
+
+.pre-tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 10px;
+  vertical-align: 1px;
 }
 
 .menu :deep(.el-menu-item),

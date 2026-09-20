@@ -109,7 +109,7 @@
 ### 5.1 面板（Docker）
 
 ```bash
-docker compose up -d            # 或：docker build -t dfpanel/panel:latest . && docker run ...
+docker compose up -d            # 或：docker build -t dreamstation625/dfpanel:latest . && docker run ...
 ```
 
 - 镜像：`Dockerfile`（node 构建前端 → go 构建后端 → alpine 运行，内含 frps 二进制）
@@ -134,7 +134,7 @@ docker run -d --name dfpanel-agent --restart unless-stopped \
   -e DFPANEL_RUNTIME=process \
   -v dfpanel-agent-data:/var/lib/dfpanel-agent \
   --network host \
-  dfpanel/agent:latest
+  dreamstation625/dfpanel-agent:latest
 ```
 
 镜像 `Dockerfile.agent` 已内置 frps / frpc 二进制，构建时自动从 frp 官方 release 获取（可用 `--build-arg FRP_VERSION=0.61.1` 固定版本）。
@@ -184,9 +184,9 @@ powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:8080/install.ps1
 ```powershell
 .\build.ps1                       # 面板（前端 + 后端 -> dfpanel.exe）
 .\build.ps1 -Agent                # 编译 Agent -> dist/dfpanel-agent-<os>-<arch>
-.\build.ps1 -Agent -AllPlatforms  # 一次产出 linux/windows × amd64/arm64 的 Agent
-.\build.ps1 -Docker               # 构建面板镜像 dfpanel/panel:latest
-.\build.ps1 -Docker -Agent        # 构建 Agent 镜像 dfpanel/agent:latest
+.\build.ps1 -Agent -AllPlatforms  # 一次产出 linux/amd64、linux/arm64、windows/amd64、darwin/arm64
+.\build.ps1 -Docker               # 构建面板镜像 dreamstation625/dfpanel:latest
+.\build.ps1 -Docker -Agent        # 构建 Agent 镜像 dreamstation625/dfpanel-agent:latest
 .\build.ps1 -Docker -Image my/panel:v1   # 指定标签
 ```
 
@@ -196,7 +196,59 @@ powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:8080/install.ps1
 
 ```bash
 dfpanel -listen :8080 -data ./data -public-url http://1.2.3.4:8080
+dfpanel -version                                  # 查看版本号
+dfpanel -agent-image myrepo/dfpanel-agent:0.2.0   # 生成安装命令时使用的 Agent 镜像
 ```
+
+### 6.1 版本号与镜像发布
+
+版本号只有一个来源：根目录 `VERSION` 文件，从 `0.0.1` 起，当前为 `0.0.1-beta.01`。
+
+| 形式 | 示例 | 镜像标签 | `latest` |
+|---|---|---|---|
+| 正式版本 | `0.0.1` | `0.0.1`、`v0.0.1`、`sha-xxxxxxx` | 更新 |
+| 预发布 | `0.0.1-beta`、`0.0.1-beta.2`、`0.0.1-beta.01`、`0.0.1-rc.1` | `0.0.1-beta.01`、`v0.0.1-beta.01`、`sha-xxxxxxx` | 不动 |
+
+`VERSION` 会在 CI 的 `verify` 任务里做格式校验（`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$`），格式不符直接失败，避免打出非法镜像标签。
+
+注意 `0.0.1-beta.01` 不是严格 SemVer（前导零的数字标识不合法，`beta.1` 才合法），所以 Docker 官方 `metadata-action` 的 `type=semver` 会跳过这类版本号；镜像的版本标签由 `type=raw,value=<VERSION>` 兜底，标签内容与 `VERSION` 完全一致。
+
+| 位置 | 注入方式 | 查看方式 |
+|---|---|---|
+| 面板二进制 | `build.ps1` / `build.sh` 读取 `VERSION`，`-ldflags "-X main.version=<ver>"` | `dfpanel -version`、启动日志、侧边栏底部 |
+| Agent 二进制 | 同上，`-ldflags "-X dfpanel/internal/agent.Version=<ver>"` | 「Agent 管理」列表的版本列（随心跳上报） |
+| 面板 / Agent 镜像 | Dockerfile 构建阶段 `-ldflags "-X ...=$(cat VERSION)"` | `docker image inspect`、`dfpanel -version` |
+
+未注入时面板与 Agent 的版本均为 `dev`。面板版本号通过 `GET /api/init-status` 一并返回（`{"initialized": bool, "version": "0.0.1-beta.01"}`），前端在侧边栏底部展示，含 `-` 的预发布版本会单独标色。
+
+镜像发布由 `.github/workflows/docker.yml` 完成：
+
+| 触发 | 行为 |
+|---|---|
+| push `main` 且改动 `VERSION` 或 workflow 文件 | 构建并推送 `linux/amd64` + `linux/arm64` |
+| 推送 `v*` tag | 校验 tag 与 `VERSION` 一致后再推送，附带版本标签 |
+| `workflow_dispatch` | 手动强制构建 |
+
+- 镜像名：`<DOCKERHUB_USERNAME>/dfpanel`、`<DOCKERHUB_USERNAME>/dfpanel-agent`
+- 凭据：仓库 Environment `DOCKERHUB` 的 `DOCKERHUB_USERNAME`（variable）与 `DOCKERHUB_TOKEN`（secret）
+- 推送前会先在 `verify` 任务里编译并 `go vet`，版本号不一致或格式非法直接失败
+- `latest` 是否更新由 `verify` 输出决定（仅正式版本 + 默认分支或正式 tag），`metadata-action` 的自动 latest 已关闭
+
+发布新版本：
+
+```bash
+# 预发布：只推版本标签，latest 保持稳定版
+echo "0.0.2-beta" > VERSION
+git add VERSION && git commit -m "chore: 0.0.2-beta"
+git push origin main
+
+# 正式版：打 tag 一并推送
+echo "0.0.2" > VERSION
+git add VERSION && git commit -m "chore: 升级版本号至 0.0.2"
+git tag v0.0.2 && git push origin main --tags
+```
+
+镜像不在 Docker Hub 时，用 `-agent-image` / `DFPANEL_AGENT_IMAGE` 指定，面板生成的 docker run / compose 安装命令会随之更新。
 
 ## 7. 接口一览
 
@@ -206,6 +258,8 @@ Agent 面（签名鉴权）：`POST /api/agent/register`、`POST /api/agent/hear
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| GET | `/api/init-status` | 是否已初始化 + 面板版本号（免鉴权） |
+| POST | `/api/init`、`/api/auth/login` | 初始化管理员 / 登录（免鉴权） |
 | GET | `/api/agents`、`/api/agents/:id` | Agent 列表 / 详情 |
 | POST | `/api/agents` | 创建 Agent |
 | POST | `/api/agents/:id/update` | 更新 Agent |

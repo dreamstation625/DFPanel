@@ -176,7 +176,7 @@ export function emptyServer(): FrpsServer {
 }
 
 export const authApi = {
-  initStatus: () => request.get<unknown, { initialized: boolean }>('/init-status'),
+  initStatus: () => request.get<unknown, { initialized: boolean; version: string }>('/init-status'),
   init: (data: { username: string; password: string }) => request.post('/init', data),
   login: (data: { username: string; password: string }) =>
     request.post<unknown, { token: string; user: { id: number; username: string; role: string } }>(
