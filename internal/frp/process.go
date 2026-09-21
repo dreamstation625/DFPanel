@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"dfpanel/internal/distrib"
 )
 
 // proc 单个 frps 实例的运行态
@@ -58,6 +60,54 @@ func (m *Manager) LogPath(id uint) string {
 func (m *Manager) IsInstalled() bool {
 	_, err := os.Stat(m.BinPath())
 	return err == nil
+}
+
+// BinDir 版本化二进制存储目录（<dataDir>/bin）
+func (m *Manager) BinDir() string { return m.binDir }
+
+// CachedVersions 面板本机已缓存的 frps 版本（降序）
+func (m *Manager) CachedVersions() []string {
+	return distrib.CachedVersions(m.binDir, "frps", runtime.GOOS, runtime.GOARCH)
+}
+
+// ActiveVersion active 槽位当前生效的 frps 版本
+func (m *Manager) ActiveVersion() string {
+	return distrib.ActiveVersion(m.BinPath(), distribVersionSidecar(m.binDir, "frps"))
+}
+
+// EnsureVersioned 确保指定版本的 frps 二进制已缓存在本机，缺失时按 base 模板下载
+func (m *Manager) EnsureVersioned(version, base string) (string, error) {
+	return distrib.EnsureFRPBinary("frps", version, runtime.GOOS, runtime.GOARCH, m.binDir, base)
+}
+
+// Activate 把指定版本切为 active 槽位，返回切换前的版本。
+// 调用前必须停掉本机正在运行的实例：Windows 上运行中的 exe 被占用无法替换。
+func (m *Manager) Activate(version string) (string, error) {
+	return distrib.ActivateBinary(m.binDir, m.BinPath(), "frps", version, runtime.GOOS, runtime.GOARCH)
+}
+
+// RemoveActive 清空 active 槽位（版本切换失败且原先没有本地二进制时使用）
+func (m *Manager) RemoveActive() {
+	_ = os.Remove(m.BinPath())
+	_ = os.Remove(distribVersionSidecar(m.binDir, "frps"))
+}
+
+// RunningIDs 当前在运行的本机实例 id
+func (m *Manager) RunningIDs() []uint {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]uint, 0, len(m.procs))
+	for id, p := range m.procs {
+		if p != nil && p.cmd != nil && p.cmd.Process != nil {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// distribVersionSidecar 与 distrib 约定一致的版本落签路径
+func distribVersionSidecar(binDir, kind string) string {
+	return filepath.Join(binDir, kind+".version")
 }
 
 // Running 判断实例是否在运行
@@ -111,7 +161,10 @@ func (m *Manager) Start(id uint) error {
 	return nil
 }
 
-// Stop 停止实例
+// Stop 停止实例，并等待进程真正退出。
+//
+// 端口释放需要时间，立刻启动新实例会因端口被占而失败；
+// 版本切换（停 → 换二进制 → 启）也依赖退出后文件占用被释放，故这里必须等待。
 func (m *Manager) Stop(id uint) error {
 	m.mu.Lock()
 	p := m.procs[id]
@@ -123,20 +176,25 @@ func (m *Manager) Stop(id uint) error {
 	if err := p.cmd.Process.Kill(); err != nil {
 		return fmt.Errorf("停止 frps 失败: %w", err)
 	}
+	m.waitStopped(id)
 	return nil
+}
+
+// waitStopped 等待实例从运行表移除（进程退出后由 Wait 协程清理）
+func (m *Manager) waitStopped(id uint) {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !m.Running(id) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // Restart 重启实例
 func (m *Manager) Restart(id uint) error {
 	if err := m.Stop(id); err != nil {
 		return err
-	}
-	// 等待旧进程退出（进程退出后会从 map 中移除）
-	for i := 0; i < 50; i++ {
-		if !m.Running(id) {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
 	}
 	return m.Start(id)
 }

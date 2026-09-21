@@ -59,3 +59,38 @@ type PortRange struct {
 	End    int `json:"end,omitempty"`
 	Single int `json:"single,omitempty"`
 }
+
+// ValueSource 值的来源（auth.tokenSource），用于把 token 从文件或命令里读出来，
+// 与 auth.token 互斥。字段对齐 frp pkg/config/v1/value_source.go。
+type ValueSource struct {
+	Type string      `json:"type"` // file / exec
+	File *FileSource `json:"file,omitempty"`
+	Exec *ExecSource `json:"exec,omitempty"`
+}
+
+// FileSource 从文件读取
+type FileSource struct {
+	Path string `json:"path"`
+}
+
+// ExecSource 从命令读取
+type ExecSource struct {
+	Command string       `json:"command"`
+	Args    []string     `json:"args,omitempty"`
+	Env     []ExecEnvVar `json:"env,omitempty"`
+}
+
+// ExecEnvVar 执行命令时的环境变量
+type ExecEnvVar struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// HTTPPluginOptions 服务端插件（frps 的 httpPlugins）
+type HTTPPluginOptions struct {
+	Name      string   `json:"name"`
+	Addr      string   `json:"addr"`
+	Path      string   `json:"path"`
+	Ops       []string `json:"ops"`
+	TLSVerify bool     `json:"tlsVerify,omitempty"`
+}

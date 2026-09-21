@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { authApi } from '@/api'
+import { refreshInitStatus } from '@/router'
 
 const router = useRouter()
 const loading = ref(false)
@@ -24,8 +25,18 @@ async function submit() {
   loading.value = true
   try {
     await authApi.init({ username: form.value.username, password: form.value.password })
-    ElMessage.success('初始化成功，请登录')
-    router.push('/login')
+    // 必须先刷新初始化状态：否则路由守卫仍认为「未初始化」，会把 /login 弹回本页
+    await refreshInitStatus()
+    ElMessage.success('管理员已创建，请登录')
+    router.replace('/login')
+  } catch (e: any) {
+    // 已初始化（例如另一个标签页抢先创建）：本页不该再出现，直接去登录页。
+    // 错误提示由 axios 拦截器统一弹出，这里不再重复提示。
+    const serverMsg: string = e?.response?.data?.error || ''
+    if (serverMsg.includes('已初始化')) {
+      await refreshInitStatus()
+      router.replace('/login')
+    }
   } finally {
     loading.value = false
   }
@@ -50,7 +61,7 @@ async function submit() {
           <el-input v-model="form.confirm" type="password" show-password size="large" @keyup.enter="submit" />
         </el-form-item>
         <el-button type="primary" size="large" style="width: 100%" :loading="loading" @click="submit">
-          创建并进入
+          创建管理员
         </el-button>
       </el-form>
     </el-card>

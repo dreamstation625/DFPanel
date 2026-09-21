@@ -69,6 +69,10 @@ async function onCommand(cmd: string) {
           <el-icon><Monitor /></el-icon>
           <span>客户端节点</span>
         </el-menu-item>
+        <el-menu-item index="/settings">
+          <el-icon><Tools /></el-icon>
+          <span>设置</span>
+        </el-menu-item>
 
         <el-sub-menu index="official-docs">
           <template #title>

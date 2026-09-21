@@ -29,6 +29,9 @@ type dispatchResult struct {
 	RolledBack bool
 	Unverified bool // 已应用但未在观察窗口内确认连通
 	Versions   []proto.HistoryEntry
+	// FrpVersion / FrpCached frp 版本指令的返回：当前 active 版本与本地已缓存版本
+	FrpVersion string
+	FrpCached  []string
 }
 
 // dispatch 把指令下发给指定 Agent：
@@ -107,6 +110,8 @@ func dispatch(hub *agenthub.Hub, cmd *model.AgentCommand) (dispatchResult, error
 		RolledBack: rd.RolledBack,
 		Unverified: rd.Unverified,
 		Versions:   rd.Versions,
+		FrpVersion: rd.FrpVersion,
+		FrpCached:  rd.FrpCached,
 	}, nil
 }
 

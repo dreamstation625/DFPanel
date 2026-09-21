@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"dfpanel/internal/distrib"
 	"dfpanel/internal/proto"
 )
 
@@ -47,11 +49,15 @@ func (a *Agent) ApplyConfig(t Target, content string, version int) ApplyOutcome 
 	cfgPath := a.cfg.ConfigPath(t)
 	bakPath := a.cfg.BackupPath(t)
 
-	// 进程运行时需要本地二进制，缺失时从面板拉取
+	// 进程运行时需要本地二进制，缺失时从面板拉取并切为 active 槽位
 	if a.cfg.Runtime == "process" {
 		if _, err := os.Stat(a.cfg.BinaryPath(kind)); err != nil {
-			if _, err := a.client.DownloadBinary(kind); err != nil {
+			_, resolved, err := a.client.DownloadBinary(kind, a.cfg.FRPVersion, runtime.GOOS, runtime.GOARCH)
+			if err != nil {
 				return ApplyOutcome{Message: fmt.Sprintf("获取 %s 二进制失败：%v", kind, err)}
+			}
+			if _, err := distrib.ActivateBinary(a.cfg.BinDir(), a.cfg.LocalBinaryPath(kind), kind, resolved, "", ""); err != nil {
+				return ApplyOutcome{Message: fmt.Sprintf("激活 %s %s 失败：%v", kind, resolved, err)}
 			}
 		}
 	}

@@ -4,55 +4,128 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	frpReleaseAPI = "https://api.github.com/repos/fatedier/frp/releases/latest"
-	frpDownload   = "https://github.com/fatedier/frp/releases/download"
+	// DefaultDownloadBase 默认下载地址模板。
+	// {version} 为不带 v 前缀的版本号，{asset} 为压缩包文件名，另支持 {os} {arch}
+	DefaultDownloadBase = "https://github.com/fatedier/frp/releases/download/v{version}/{asset}"
+	// VersionListAPI 版本列表固定使用 GitHub 官方接口（不做镜像，避免第三方代理失效带来歧义）
+	VersionListAPI = "https://api.github.com/repos/fatedier/frp/releases"
+	// LatestTag 代指最新版本，仅在面板侧解析，下发给 Agent 的永远是具体版本号
+	LatestTag = "latest"
+	// versionListCacheTTL 版本列表内存缓存时长，规避 GitHub API 未认证 60 次/小时的限流
+	versionListCacheTTL = 10 * time.Minute
 )
 
-// BinaryName 本地缓存文件名：frps-linux-amd64 / frpc.exe 形态
-func BinaryName(kind, goos, goarch string) string {
-	name := fmt.Sprintf("%s-%s-%s", kind, goos, goarch)
+// versionRe 版本号白名单。
+// version 来自免鉴权的 URL 参数，且会被拼进可配置的下载模板，必须严格校验以防路径穿越。
+var versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$`)
+
+// versionOutRe 从 frp -v 输出中提取版本号
+var versionOutRe = regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+`)
+
+// ValidVersion 校验版本号格式
+func ValidVersion(v string) bool { return versionRe.MatchString(v) }
+
+// AssetName frp release 压缩包名：frp_<ver>_<os>_<arch>.tar.gz / .zip
+func AssetName(version, goos, goarch string) string {
+	if goos == "windows" {
+		return fmt.Sprintf("frp_%s_%s_%s.zip", version, normalizeOS(goos), normalizeArch(goarch))
+	}
+	return fmt.Sprintf("frp_%s_%s_%s.tar.gz", version, normalizeOS(goos), normalizeArch(goarch))
+}
+
+// BinaryName 版本化二进制文件名：frps-0.62.1-linux-amd64 / frpc-0.62.1-windows-amd64.exe
+func BinaryName(kind, version, goos, goarch string) string {
+	name := fmt.Sprintf("%s-%s-%s-%s", kind, version, normalizeOS(goos), normalizeArch(goarch))
 	if goos == "windows" {
 		name += ".exe"
 	}
 	return name
 }
 
-// LatestVersion 查询 frp 最新版本号（不带 v 前缀）
-func LatestVersion() (string, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(frpReleaseAPI)
-	if err != nil {
-		return "", err
+// ParseBinaryName 从版本化文件名反解版本号，如 frps-0.62.1-linux-amd64 -> 0.62.1
+//
+// 不能按 "-" 简单切分：版本号自身可能带横杠（0.62.1-beta.1），
+// 因此改为剥掉已知的 -<os>-<arch> 后缀。
+func ParseBinaryName(name, kind string) string {
+	base := strings.TrimSuffix(strings.TrimPrefix(name, kind+"-"), ".exe")
+	for _, goos := range []string{"linux", "windows", "darwin"} {
+		for _, goarch := range []string{"amd64", "arm64", "arm"} {
+			suffix := "-" + goos + "-" + goarch
+			if !strings.HasSuffix(base, suffix) {
+				continue
+			}
+			if v := strings.TrimSuffix(base, suffix); ValidVersion(v) {
+				return v
+			}
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("查询最新版本失败：HTTP %d", resp.StatusCode)
-	}
-	var out struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
-	}
-	return strings.TrimPrefix(strings.TrimSpace(out.TagName), "v"), nil
+	return ""
 }
 
-// EnsureFRPBinary 确保本地存在 frp 二进制；缺失时从官方 release 下载并缓存到 dir。
-// version 传 "latest" 时自动解析最新版本号。
-func EnsureFRPBinary(kind, version, goos, goarch, dir string) (string, error) {
+// ActiveName active 槽位名：frps / frps.exe（路径字面固定，现有 verify / start 链路无需改动）
+func ActiveName(kind, goos string) string {
+	if goos == "windows" {
+		return kind + ".exe"
+	}
+	return kind
+}
+
+// ExpandBase 展开下载地址模板
+func ExpandBase(base, version, goos, goarch string) (string, error) {
+	if !ValidVersion(version) {
+		return "", fmt.Errorf("版本号格式不合法：%s", version)
+	}
+	if strings.TrimSpace(base) == "" {
+		base = DefaultDownloadBase
+	}
+	if !strings.Contains(base, "{version}") || !strings.Contains(base, "{asset}") {
+		return "", errors.New("下载地址模板必须同时包含 {version} 与 {asset} 占位符")
+	}
+	asset := AssetName(version, goos, goarch)
+	repl := strings.NewReplacer(
+		"{version}", version,
+		"{asset}", asset,
+		"{os}", normalizeOS(goos),
+		"{arch}", normalizeArch(goarch),
+	)
+	return repl.Replace(base), nil
+}
+
+// resolveVersion 把 latest 解析为具体版本号
+func resolveVersion(version string) (string, error) {
+	if version == "" || version == LatestTag {
+		return LatestVersion()
+	}
+	if !ValidVersion(version) {
+		return "", fmt.Errorf("版本号格式不合法：%s", version)
+	}
+	return version, nil
+}
+
+// EnsureFRPBinary 确保本地存在指定版本的 frp 二进制，缺失时按 base 模板下载并落为版本化文件。
+//
+// 缓存键包含版本号，因此多个版本可以共存、互不覆盖（这同时也是更新时的天然回滚备份）。
+// 返回版本化文件的绝对路径。
+func EnsureFRPBinary(kind, version, goos, goarch, dir, base string) (string, error) {
 	if kind != "frps" && kind != "frpc" {
 		return "", fmt.Errorf("未知类型：%s", kind)
 	}
@@ -66,25 +139,21 @@ func EnsureFRPBinary(kind, version, goos, goarch, dir string) (string, error) {
 		return "", err
 	}
 
-	dest := filepath.Join(dir, BinaryName(kind, goos, goarch))
+	ver, err := resolveVersion(version)
+	if err != nil {
+		return "", err
+	}
+
+	dest := filepath.Join(dir, BinaryName(kind, ver, goos, goarch))
 	if fi, err := os.Stat(dest); err == nil && fi.Size() > 0 {
 		return dest, nil
 	}
 
-	ver := version
-	if ver == "" || ver == "latest" {
-		v, err := LatestVersion()
-		if err != nil {
-			return "", fmt.Errorf("解析最新 frp 版本失败：%w", err)
-		}
-		ver = v
+	url, err := ExpandBase(base, ver, goos, goarch)
+	if err != nil {
+		return "", err
 	}
-
-	asset := fmt.Sprintf("frp_%s_%s_%s.tar.gz", ver, normalizeOS(goos), normalizeArch(goarch))
-	if goos == "windows" {
-		asset = fmt.Sprintf("frp_%s_%s_%s.zip", ver, normalizeOS(goos), normalizeArch(goarch))
-	}
-	url := fmt.Sprintf("%s/v%s/%s", frpDownload, ver, asset)
+	asset := AssetName(ver, goos, goarch)
 
 	tmp, err := os.CreateTemp("", "frp-download-*")
 	if err != nil {
@@ -98,7 +167,7 @@ func EnsureFRPBinary(kind, version, goos, goarch, dir string) (string, error) {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Get(url)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("下载 %s 失败：%w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -122,7 +191,297 @@ func EnsureFRPBinary(kind, version, goos, goarch, dir string) (string, error) {
 		}
 	}
 	_ = os.Chmod(dest, 0o755)
+
+	// 下载后先自检，避免把一个跑不起来的二进制落进仓库
+	if got, err := QueryVersion(dest); err == nil && got != ver {
+		_ = os.Remove(dest)
+		return "", fmt.Errorf("下载的二进制版本与期望不一致：期望 %s，实际 %s", ver, got)
+	}
 	return dest, nil
+}
+
+// ActivateBinary 把某个版本切为 active 槽位，返回切换前的 active 版本（空表示原先无 active 二进制）。
+//
+// active 路径由调用方指定且字面不变（如 <dataDir>/frps），因此调用方无需重建任何持有该路径的缓存。
+// 非 Windows 用软链原子替换；Windows 软链需要开发者模式，退化为「写 .new 再 rename 覆盖」。
+// 注意：Windows 上正在运行的 exe 被占用无法替换，调用前必须先停掉相关实例。
+func ActivateBinary(binDir, activePath, kind, version, goos, goarch string) (string, error) {
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goarch == "" {
+		goarch = runtime.GOARCH
+	}
+	if !ValidVersion(version) {
+		return "", fmt.Errorf("版本号格式不合法：%s", version)
+	}
+
+	src := filepath.Join(binDir, BinaryName(kind, version, goos, goarch))
+	if fi, err := os.Stat(src); err != nil || fi.Size() == 0 {
+		return "", fmt.Errorf("版本 %s 的 %s 二进制尚未下载，请先执行下载", version, kind)
+	}
+	if err := os.MkdirAll(filepath.Dir(activePath), 0o755); err != nil {
+		return "", err
+	}
+
+	old := ActiveVersion(activePath, versionSidecar(binDir, kind))
+
+	if goos != "windows" {
+		tmpLink := activePath + ".new"
+		_ = os.Remove(tmpLink)
+		if err := os.Symlink(src, tmpLink); err == nil {
+			if err := os.Rename(tmpLink, activePath); err == nil {
+				_ = writeVersionSidecar(binDir, kind, version)
+				return old, nil
+			}
+			_ = os.Remove(tmpLink)
+		}
+	}
+
+	// 拷贝方式：先完整写入 .new 再 rename，避免半截文件被进程读到
+	tmpFile := activePath + ".new"
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(tmpFile, data, 0o755); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmpFile, activePath); err != nil {
+		_ = os.Remove(tmpFile)
+		return "", err
+	}
+	_ = os.Chmod(activePath, 0o755)
+	_ = writeVersionSidecar(binDir, kind, version)
+	return old, nil
+}
+
+// ActiveVersion 查询 active 槽位对应的版本：优先读版本落签，缺失时执行二进制自报版本
+func ActiveVersion(activePath, sidecar string) string {
+	if sidecar != "" {
+		if v, err := os.ReadFile(sidecar); err == nil {
+			if s := strings.TrimSpace(string(v)); ValidVersion(s) {
+				return s
+			}
+		}
+	}
+	if activePath == "" {
+		return ""
+	}
+	if _, err := os.Stat(activePath); err != nil {
+		return ""
+	}
+	if v, err := QueryVersion(activePath); err == nil {
+		if sidecar != "" {
+			_ = os.MkdirAll(filepath.Dir(sidecar), 0o755)
+			_ = os.WriteFile(sidecar, []byte(v+"\n"), 0o644)
+		}
+		return v
+	}
+	return ""
+}
+
+// CachedVersions 列出本地已缓存的某个 kind 的版本（降序）
+func CachedVersions(dir, kind, goos, goarch string) []string {
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goarch == "" {
+		goarch = runtime.GOARCH
+	}
+	out := []string{}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	prefix := kind + "-"
+	suffix := fmt.Sprintf("-%s-%s", normalizeOS(goos), normalizeArch(goarch))
+	if goos == "windows" {
+		suffix += ".exe"
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+			continue
+		}
+		ver := strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix)
+		if ValidVersion(ver) {
+			out = append(out, ver)
+		}
+	}
+	sortVersionsDesc(out)
+	return out
+}
+
+// QueryVersion 执行 <bin> -v 解析版本号
+func QueryVersion(binPath string) (string, error) {
+	if _, err := os.Stat(binPath); err != nil {
+		return "", err
+	}
+	for _, flag := range []string{"-v", "--version"} {
+		out, err := runWithTimeout(5*time.Second, binPath, flag)
+		if err != nil && len(out) == 0 {
+			continue
+		}
+		if m := versionOutRe.FindString(string(out)); m != "" {
+			return m, nil
+		}
+	}
+	return "", errors.New("无法从二进制输出中解析版本号")
+}
+
+// 版本列表缓存
+var (
+	versionListMu  sync.Mutex
+	versionListVal []string
+	versionListAt  time.Time
+)
+
+// ListVersions 取 frp 官方 release 版本列表（降序）。
+// 命中 10 分钟内存缓存；失败时返回错误，由调用方降级为手填版本。
+func ListVersions() ([]string, error) {
+	versionListMu.Lock()
+	if len(versionListVal) > 0 && time.Since(versionListAt) < versionListCacheTTL {
+		cached := append([]string(nil), versionListVal...)
+		versionListMu.Unlock()
+		return cached, nil
+	}
+	versionListMu.Unlock()
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, VersionListAPI+"?per_page=100", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("查询版本列表失败：HTTP %d", resp.StatusCode)
+	}
+
+	var out []struct {
+		TagName    string `json:"tag_name"`
+		Draft      bool   `json:"draft"`
+		Prerelease bool   `json:"prerelease"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+
+	versions := make([]string, 0, len(out))
+	for _, r := range out {
+		if r.Draft {
+			continue
+		}
+		v := strings.TrimPrefix(strings.TrimSpace(r.TagName), "v")
+		if ValidVersion(v) {
+			versions = append(versions, v)
+		}
+	}
+	sortVersionsDesc(versions)
+
+	versionListMu.Lock()
+	versionListVal = versions
+	versionListAt = time.Now()
+	versionListMu.Unlock()
+	return versions, nil
+}
+
+// LatestVersion 查询 frp 最新版本号（不带 v 前缀）
+func LatestVersion() (string, error) {
+	if list, err := ListVersions(); err == nil && len(list) > 0 {
+		return list[0], nil
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(VersionListAPI + "/latest")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("查询最新版本失败：HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	v := strings.TrimPrefix(strings.TrimSpace(out.TagName), "v")
+	if !ValidVersion(v) {
+		return "", errors.New("无法解析最新版本号：" + out.TagName)
+	}
+	return v, nil
+}
+
+// MergeVersions 合并「可用版本」与「已缓存版本」，用于前端下拉展示
+func MergeVersions(available, cached []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(available)+len(cached))
+	for _, v := range cached {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	for _, v := range available {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	sortVersionsDesc(out)
+	return out
+}
+
+func versionSidecar(dir, kind string) string {
+	return filepath.Join(dir, kind+".version")
+}
+
+func writeVersionSidecar(dir, kind, version string) error {
+	_ = os.MkdirAll(dir, 0o755)
+	return os.WriteFile(versionSidecar(dir, kind), []byte(version+"\n"), 0o644)
+}
+
+// sortVersionsDesc 按数字段降序排序（非法版本排到最后）
+func sortVersionsDesc(list []string) {
+	sort.Slice(list, func(i, j int) bool { return compareVersion(list[i], list[j]) > 0 })
+}
+
+func compareVersion(a, b string) int {
+	as, bs := strings.SplitN(a, ".", 3), strings.SplitN(b, ".", 3)
+	for i := 0; i < 3; i++ {
+		av, bv := 0, 0
+		if i < len(as) {
+			av, _ = strconv.Atoi(as[i])
+		}
+		if i < len(bs) {
+			bv, _ = strconv.Atoi(bs[i])
+		}
+		if av != bv {
+			if av > bv {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
+}
+
+func runWithTimeout(timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return out, errors.New("执行超时")
+	}
+	return out, err
 }
 
 func extractTarGz(r io.Reader, kind, dest string) error {

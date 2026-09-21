@@ -188,6 +188,21 @@ func (a *Agent) handleCommand(cmd proto.CommandData) proto.ResultData {
 
 	case proto.CmdVersions:
 		return proto.ResultData{OK: true, Versions: a.listHistory(t), Running: a.controller(t).Running()}
+
+	case proto.CmdFrpDownload:
+		return a.handleFrpDownload(cmd)
+
+	case proto.CmdFrpActivate:
+		return a.handleFrpActivate(cmd)
+
+	case proto.CmdFrpStatus:
+		active, cached := a.frpStatus()
+		return proto.ResultData{
+			OK:         true,
+			Message:    a.frpPlatformError(),
+			FrpVersion: active,
+			FrpCached:  cached,
+		}
 	}
 	return proto.ResultData{Message: "未知指令：" + cmd.Type}
 }
@@ -289,6 +304,16 @@ func (a *Agent) controller(t Target) *Controller {
 		LogPath:       a.cfg.LogPath(t),
 		ContainerName: ContainerName(kind, t.ID),
 	}
+	if a.cfg.Runtime == "docker" {
+		// 容器槽位存在时挂载宿主机二进制并覆盖 entrypoint；不存在则沿用镜像自带的 frp。
+		// 平台探测失败（如 docker 不可用）就不介入，交由镜像决定。
+		if cos, carch, err := containerPlatform(); err == nil {
+			slot := a.cfg.ContainerSlotPath(kind, cos, carch)
+			if fi, statErr := os.Stat(slot); statErr == nil && fi.Size() > 0 {
+				spec.MountBinary = slot
+			}
+		}
+	}
 	if kind == "frps" {
 		spec.Image = a.cfg.FrpsImage
 	} else {
@@ -329,7 +354,15 @@ func (a *Agent) heartbeatPayload() proto.HeartbeatData {
 	}
 	a.mu.Unlock()
 
-	return proto.HeartbeatData{Version: Version, Hostname: hostname, Targets: targets}
+	active, cached := a.frpStatus()
+	return proto.HeartbeatData{
+		Version:    Version,
+		Hostname:   hostname,
+		Targets:    targets,
+		Runtime:    a.cfg.Runtime,
+		FrpVersion: active,
+		FrpCached:  cached,
+	}
 }
 
 func (a *Agent) heartbeatEnvelope() proto.Envelope {

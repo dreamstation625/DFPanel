@@ -9,9 +9,44 @@ import {
   type CommandHistory,
   type InstallCommands,
 } from '@/api'
+import FrpVersionPicker from '@/components/FrpVersionPicker.vue'
 
 const loading = ref(false)
 const agents = ref<AgentInfo[]>([])
+
+// frp 版本管理（版本按 Agent 统一：该 Agent 上 frps 与 frpc 共用一个版本）
+const frpVisible = ref(false)
+const frpTarget = ref<AgentInfo | null>(null)
+
+function openFrp(a: AgentInfo) {
+  frpTarget.value = a
+  frpVisible.value = true
+}
+
+/** frp 版本展示：优先显示实际生效版本，未接管时按运行时给出说明 */
+function frpLabel(a: AgentInfo) {
+  if (!a.frpInstalledVersion) return a.runtime === 'docker' ? '镜像自带' : '—'
+  return a.frpInstalledVersion
+}
+
+/** 期望版本与生效版本不一致，或缓存里有更新版本时提示可更新 */
+function frpNeedsUpdate(a: AgentInfo) {
+  if (a.frpVersion && a.frpInstalledVersion && a.frpVersion !== a.frpInstalledVersion) return true
+  if (!a.frpInstalledVersion) return false
+  return (a.frpCachedVersions || '')
+    .split(',')
+    .filter(Boolean)
+    .some((v) => compareSemver(v, a.frpInstalledVersion) > 0)
+}
+
+function compareSemver(x: string, y: string) {
+  const xs = x.split('.').map((n) => parseInt(n, 10) || 0)
+  const ys = y.split('.').map((n) => parseInt(n, 10) || 0)
+  for (let i = 0; i < 3; i += 1) {
+    if ((xs[i] || 0) !== (ys[i] || 0)) return (xs[i] || 0) > (ys[i] || 0) ? 1 : -1
+  }
+  return 0
+}
 
 const createVisible = ref(false)
 const createForm = reactive({ name: '', remark: '', roles: ['frpc'] as string[] })
@@ -185,15 +220,6 @@ onMounted(load)
       </div>
     </div>
 
-    <el-alert
-      type="info"
-      show-icon
-      :closable="false"
-      title="Agent 主动反连面板，可部署在任意内网机器上"
-      description="同一个 Agent 可同时托管 frps（服务端）与 frpc（客户端节点）。安装支持二进制一键脚本与 Docker 两种形态，进程可运行在宿主机也可以由 Agent 拉起容器。"
-      style="margin-bottom: 16px"
-    />
-
     <el-card>
       <el-table v-if="agents.length" :data="agents" style="width: 100%">
         <el-table-column prop="name" label="名称" min-width="140">
@@ -222,15 +248,30 @@ onMounted(load)
             <div class="sub">{{ row.os }} {{ row.arch }} {{ row.remoteAddr }}</div>
           </template>
         </el-table-column>
-        <el-table-column prop="version" label="版本" width="90">
+        <el-table-column prop="version" label="Agent 版本" width="100">
           <template #default="{ row }">{{ row.version || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="运行时" width="96">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.runtime === 'docker' ? 'warning' : 'info'" effect="plain">
+              {{ row.runtime === 'docker' ? 'docker' : 'process' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="frp 版本" width="150">
+          <template #default="{ row }">
+            <div>{{ frpLabel(row) }}</div>
+            <div v-if="row.frpVersion" class="sub">期望 {{ row.frpVersion }}</div>
+            <el-tag v-if="frpNeedsUpdate(row)" size="small" type="warning" style="margin-top: 2px">可更新</el-tag>
+          </template>
         </el-table-column>
         <el-table-column label="最后心跳" width="180">
           <template #default="{ row }">{{ fmtTime(row.lastSeen) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openInstall(row)">安装命令</el-button>
+            <el-button link type="primary" @click="openFrp(row)">frp 版本</el-button>
             <el-button link @click="openEdit(row)">编辑</el-button>
             <el-button link @click="openHistory(row)">指令</el-button>
             <el-button link type="warning" @click="resetToken(row)">重置</el-button>
@@ -314,10 +355,9 @@ onMounted(load)
         <pre class="code-block">{{ currentCommand }}</pre>
         <div class="hint-line">
           <span v-if="installRuntime === 'docker'">
-            容器内已内置 frps / frpc；若选择「Docker 容器运行」，Agent 会通过 docker 命令拉起隧道容器，需要挂载
-            /var/run/docker.sock。
+            容器内已内置 frps / frpc；需挂载 /var/run/docker.sock。
           </span>
-          <span v-else>脚本会自动注册 systemd / launchd / 计划任务，并开机自启。</span>
+          <span v-else>自动注册 systemd / launchd / 计划任务并开机自启。</span>
         </div>
       </div>
       <template #footer>
@@ -350,6 +390,14 @@ onMounted(load)
         </el-table-column>
       </el-table>
     </el-dialog>
+    <FrpVersionPicker
+      v-if="frpTarget"
+      v-model="frpVisible"
+      target="agent"
+      :target-id="frpTarget.id"
+      :target-name="frpTarget.name"
+      @closed="load"
+    />
   </div>
 </template>
 

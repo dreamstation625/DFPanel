@@ -33,7 +33,9 @@ func Setup(cfg *config.Config) *gin.Engine {
 	agentManage := handler.NewAgentManageHandler(hub)
 	nodeHandler := handler.NewNodeHandler(hub, cfg)
 	proxyHandler := handler.NewProxyHandler()
+	visitorHandler := handler.NewVisitorHandler()
 	installHandler := handler.NewInstallHandler(cfg)
+	frpHandler := handler.NewFrpHandler(cfg, mgr, hub)
 
 	api := r.Group("/api")
 	{
@@ -106,8 +108,25 @@ func Setup(cfg *config.Config) *gin.Engine {
 			authed.POST("/proxies/:id/update", proxyHandler.Update)
 			authed.POST("/proxies/:id/delete", proxyHandler.Delete)
 
+			// 访问端（点对点隧道的访问侧）
+			authed.GET("/nodes/:id/visitors", visitorHandler.List)
+			authed.POST("/nodes/:id/visitors", visitorHandler.Create)
+			authed.POST("/visitors/:id/update", visitorHandler.Update)
+			authed.POST("/visitors/:id/delete", visitorHandler.Delete)
+
 			// 配置版本历史（回滚依据）
 			authed.GET("/config-versions", agentManage.Versions)
+
+			// frp 版本管理与系统设置
+			authed.GET("/settings", frpHandler.GetSettings)
+			authed.POST("/settings", frpHandler.SaveSettings)
+			authed.GET("/frp-versions", frpHandler.ListVersions)
+			authed.GET("/frp/local", frpHandler.LocalFrp)
+			authed.POST("/frp/local/download", frpHandler.LocalFrpDownload)
+			authed.POST("/frp/local/activate", frpHandler.LocalFrpActivate)
+			authed.GET("/agents/:id/frp", frpHandler.AgentFrp)
+			authed.POST("/agents/:id/frp/download", frpHandler.AgentFrpDownload)
+			authed.POST("/agents/:id/frp/activate", frpHandler.AgentFrpActivate)
 		}
 	}
 

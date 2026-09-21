@@ -33,6 +33,11 @@ type FrpsServer struct {
 	AuthMethod           string `gorm:"size:32;default:token" json:"authMethod"` // token / oidc
 	AuthToken            string `gorm:"size:128" json:"authToken"`
 	AuthAdditionalScopes string `gorm:"size:64" json:"authAdditionalScopes"` // 逗号分隔：HeartBeats,NewWorkConns
+	// tokenSource 与 authToken 互斥：把 token 交给文件或命令提供
+	AuthTokenSourceType string `gorm:"size:16" json:"authTokenSourceType"` // file / exec
+	AuthTokenSourcePath string `gorm:"size:255" json:"authTokenSourcePath"`
+	// AuthHTTPPlugins 服务端插件，JSON 数组文本（name / addr / path / ops / tlsVerify）
+	AuthHTTPPlugins string `gorm:"type:text" json:"authHttpPlugins"`
 	// auth.method = oidc 时生效
 	AuthOIDCIssuer          string `gorm:"size:255" json:"authOidcIssuer"`
 	AuthOIDCAudience        string `gorm:"size:255" json:"authOidcAudience"`

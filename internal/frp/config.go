@@ -15,7 +15,9 @@ type AuthServerConfig struct {
 	Method           string                `json:"method,omitempty"` // token / oidc，frp 默认 token
 	AdditionalScopes []string              `json:"additionalScopes,omitempty"`
 	Token            string                `json:"token,omitempty"`
-	OIDC             *AuthOIDCServerConfig `json:"oidc,omitempty"`
+	// TokenSource 与 Token 互斥：把 token 的来源交给文件或命令
+	TokenSource *ValueSource          `json:"tokenSource,omitempty"`
+	OIDC        *AuthOIDCServerConfig `json:"oidc,omitempty"`
 }
 
 // AuthOIDCServerConfig auth.method = oidc 时生效
@@ -85,6 +87,34 @@ type FrpsConfig struct {
 	NatHoleAnalysisDataReserveHours int   `json:"natholeAnalysisDataReserveHours,omitempty"`
 
 	AllowPorts []PortRange `json:"allowPorts,omitempty"`
+
+	// HTTPPlugins 服务端插件，按 ops 在登录 / 新建代理等时机回调外部 HTTP 服务
+	HTTPPlugins []HTTPPluginOptions `json:"httpPlugins,omitempty"`
+}
+
+// ParseHTTPPlugins 解析服务端插件配置（JSON 数组文本）。
+// 留空表示不使用插件；格式非法时返回错误，避免把坏配置下发到 frps。
+func ParseHTTPPlugins(raw string) ([]HTTPPluginOptions, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var out []HTTPPluginOptions
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, errors.New("服务端插件配置不是合法的 JSON 数组：" + err.Error())
+	}
+	for i := range out {
+		if strings.TrimSpace(out[i].Name) == "" {
+			return nil, errors.New("服务端插件缺少 name")
+		}
+		if strings.TrimSpace(out[i].Addr) == "" {
+			return nil, errors.New("服务端插件缺少 addr")
+		}
+		if strings.TrimSpace(out[i].Path) == "" {
+			out[i].Path = "/handler"
+		}
+	}
+	return out, nil
 }
 
 // BuildFrpsJSON 根据面板配置生成 frps.json 文本
@@ -92,7 +122,6 @@ func BuildFrpsJSON(s *model.FrpsServer, logPath string) (string, error) {
 	cfg := FrpsConfig{
 		Auth: AuthServerConfig{
 			Method:           defaultStr(s.AuthMethod, "token"),
-			Token:            s.AuthToken,
 			AdditionalScopes: ParseScopes(s.AuthAdditionalScopes),
 		},
 		BindAddr:      defaultStr(s.BindAddr, "0.0.0.0"),
@@ -115,6 +144,23 @@ func BuildFrpsJSON(s *model.FrpsServer, logPath string) (string, error) {
 		NatHoleAnalysisDataReserveHours: s.NatHoleAnalysisDataReserveHours,
 		EnablePrometheus:                s.EnablePrometheus,
 		AllowPorts:                      ParseAllowPorts(s.AllowPorts),
+	}
+
+	// tokenSource 与 token 互斥：配了来源就不再写 token
+	if path := strings.TrimSpace(s.AuthTokenSourcePath); path != "" {
+		cfg.Auth.TokenSource = &ValueSource{
+			Type: defaultStr(s.AuthTokenSourceType, "file"),
+			File: &FileSource{Path: path},
+		}
+	} else {
+		cfg.Auth.Token = s.AuthToken
+	}
+
+	// 服务端插件（httpPlugins）
+	if plugins, err := ParseHTTPPlugins(s.AuthHTTPPlugins); err != nil {
+		return "", err
+	} else if len(plugins) > 0 {
+		cfg.HTTPPlugins = plugins
 	}
 
 	// 非零值才写入，未配置时交给 frps 自身的默认值

@@ -28,8 +28,10 @@ func Init(dataDir string) error {
 		&model.FrpsServer{},
 		&model.Node{},
 		&model.Proxy{},
+		&model.Visitor{},
 		&model.Agent{},
 		&model.ConfigVersion{},
 		&model.AgentCommand{},
+		&model.Setting{},
 	)
 }

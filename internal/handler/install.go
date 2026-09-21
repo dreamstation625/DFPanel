@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -13,6 +14,7 @@ import (
 	"dfpanel/internal/database"
 	"dfpanel/internal/distrib"
 	"dfpanel/internal/model"
+	"dfpanel/internal/setting"
 )
 
 // InstallHandler 安装脚本分发与一键安装命令生成（支持二进制与 Docker 两种形态）
@@ -102,27 +104,56 @@ func (h *InstallHandler) DownloadAgent(c *gin.Context) {
 }
 
 // DownloadFRP GET /downloads/:kind/:version/:os/:arch 分发 frps / frpc 二进制
-// 本地缓存缺失时自动从 frp 官方 release 下载并缓存（version 可用 latest）
+//
+// 本地缓存缺失时由面板按配置的下载地址模板（可指向镜像源）抓取，并落为版本化文件。
+// version 可用 latest，解析出的具体版本号通过 X-Frp-Version 响应头回传，
+// 便于 Agent 侧以确定版本号记账。
+//
+// 该端点免鉴权且 version 完全由 URL 控制，因此必须先做版本号白名单校验。
 func (h *InstallHandler) DownloadFRP(c *gin.Context) {
 	kind := strings.ToLower(c.Param("kind"))
 	if kind != "frps" && kind != "frpc" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "类型只能是 frps / frpc"})
 		return
 	}
-	version := c.Param("version")
+	version := strings.TrimSpace(c.Param("version"))
 	if version == "" {
-		version = "latest"
+		version = distrib.LatestTag
+	}
+	if version != distrib.LatestTag && !distrib.ValidVersion(version) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "版本号格式不合法：" + version})
+		return
 	}
 	osName := strings.ToLower(c.Param("os"))
 	arch := strings.ToLower(c.Param("arch"))
+	if osName == "" {
+		osName = runtime.GOOS
+	}
+	if arch == "" {
+		arch = runtime.GOARCH
+	}
 
-	path, err := distrib.EnsureFRPBinary(kind, version, osName, arch, filepath.Join(h.cfg.DataDir, "bin"))
+	base := setting.Load(h.baseFallback()).FrpDownloadBase
+	path, err := distrib.EnsureFRPBinary(kind, version, osName, arch, filepath.Join(h.cfg.DataDir, "bin"), base)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "获取 " + kind + " 二进制失败：" + err.Error()})
 		return
 	}
+
+	resolved := distrib.ParseBinaryName(filepath.Base(path), kind)
+	if resolved != "" {
+		c.Header("X-Frp-Version", resolved)
+	}
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filepath.Base(path)))
 	c.File(path)
+}
+
+// baseFallback 启动参数/环境变量提供的下载地址模板，作为设置表为空时的回退
+func (h *InstallHandler) baseFallback() string {
+	if h.cfg == nil {
+		return ""
+	}
+	return h.cfg.FRPDownloadBase
 }
 
 // panelURL 面板对外地址：优先取 -public-url，其次按请求推断

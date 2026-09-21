@@ -4,12 +4,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   agentApi,
   emptyServer,
+  frpVersionApi,
   serverApi,
   statusLabel as statusText,
   statusType as statusKind,
   type AgentInfo,
   type ConfigVersionItem,
   type FrpsServer,
+  type FrpVersionState,
 } from '@/api'
 import FieldHelp from '@/components/FieldHelp.vue'
 import VersionHistory from '@/components/VersionHistory.vue'
@@ -33,6 +35,33 @@ const versionLoading = ref(false)
 const versions = ref<ConfigVersionItem[]>([])
 const versionsFromAgent = ref(false)
 
+// frp 版本（本机托管看面板 bin 目录；Agent 托管看该 Agent 上报的版本）
+const localFrp = ref<FrpVersionState | null>(null)
+
+const frpVersionText = computed(() => {
+  if (form.value.deployMode === 'agent') {
+    const a = agents.value.find((item) => item.id === form.value.agentId)
+    if (!a) return '未绑定 Agent'
+    if (!a.frpInstalledVersion) return a.runtime === 'docker' ? '镜像自带' : '未知'
+    return a.frpInstalledVersion
+  }
+  return localFrp.value?.active || '未安装'
+})
+
+/** 版本提示：本地/Agent 是否有可用的更新，或期望版本尚未生效 */
+const frpVersionHint = computed(() => {
+  if (form.value.deployMode === 'agent') {
+    const a = agents.value.find((item) => item.id === form.value.agentId)
+    if (!a) return ''
+    if (a.frpVersion && a.frpInstalledVersion && a.frpVersion !== a.frpInstalledVersion) {
+      return '期望版本与生效版本不一致'
+    }
+    return ''
+  }
+  if (localFrp.value?.updatable) return '期望版本与生效版本不一致'
+  return ''
+})
+
 const current = computed(() => list.value.find((s) => s.id === form.value.id) ?? null)
 /** 用户是否主动点了「新建服务端」：用于区分初始空白态与新建草稿 */
 const draftMode = ref(false)
@@ -51,6 +80,12 @@ async function load() {
     const [servers, agentList] = await Promise.all([serverApi.list(), agentApi.list()])
     list.value = servers
     agents.value = agentList
+    // frp 版本状态：失败不影响页面其它信息
+    try {
+      localFrp.value = await frpVersionApi.local()
+    } catch {
+      localFrp.value = null
+    }
     if (list.value.length > 0) {
       const stillExists = list.value.some((s) => s.id === form.value.id)
       // 新建草稿时保留用户填写的内容；其余情况默认选中第一个服务端
@@ -258,6 +293,14 @@ onMounted(load)
           <el-option v-for="s in list" :key="s.id" :value="s.id" :label="s.name" />
         </el-select>
         <el-tag :type="statusType" effect="dark">{{ statusLabel }}</el-tag>
+        <el-tooltip
+          :content="frpVersionHint || 'frp 版本（可在「设置」或「Agent 管理」中切换）'"
+          placement="bottom"
+        >
+          <el-tag effect="plain" :type="frpVersionHint ? 'warning' : 'info'">
+            frp {{ frpVersionText }}
+          </el-tag>
+        </el-tooltip>
         <el-button type="primary" plain @click="createNew">新建服务端</el-button>
         <el-button :disabled="isNew" @click="preview">预览 frps.json</el-button>
         <el-button :disabled="isNew" @click="viewLog">日志</el-button>
@@ -274,7 +317,7 @@ onMounted(load)
       show-icon
       :closable="false"
       title="未检测到 frps 二进制"
-      description="请将 frps 可执行文件放到面板的 bin 目录（默认 ./data/bin）后，再点击“启动”。"
+      description="可在「设置」中下载，或手动放入 ./data/bin。"
       style="margin-bottom: 16px"
     />
 
@@ -284,7 +327,7 @@ onMounted(load)
       show-icon
       :closable="false"
       title="Agent 托管模式配置不完整"
-      description="请选择具备 frps 角色的 Agent，否则配置无法下发到远端。Agent 离线时配置会进入队列，上线后自动执行。"
+      description="请选择具备 frps 角色的 Agent；Agent 离线时配置会排队，上线后自动下发。"
       style="margin-bottom: 16px"
     />
 
@@ -294,7 +337,7 @@ onMounted(load)
       show-icon
       :closable="false"
       title="正在新建服务端配置"
-      description="填写完成后点击「保存」创建；需要立即生效请点「保存并应用」。同一台机器（本机托管或同一个 Agent）上监听端口不能重复。"
+      description="「保存」创建，「保存并应用」立即生效；同一台机器上监听端口不可重复。"
       style="margin-bottom: 16px"
     />
 
@@ -310,7 +353,7 @@ onMounted(load)
                 <el-radio-button value="local">面板本机托管</el-radio-button>
                 <el-radio-button value="agent">远端 Agent 托管</el-radio-button>
               </el-radio-group>
-              <span class="hint">本机托管由面板直接启动 frps；Agent 托管把配置下发到目标服务器执行</span>
+              <span class="hint">本机由面板启动 frps，Agent 托管则下发到目标服务器执行</span>
             </el-form-item>
             <el-form-item v-if="form.deployMode === 'agent'" label="托管 Agent">
               <el-select v-model="form.agentId" placeholder="选择具备 frps 角色的 Agent" style="width: 280px">
@@ -325,27 +368,27 @@ onMounted(load)
             </el-form-item>
             <el-form-item v-if="form.deployMode === 'agent'" label="公网地址 publicAddr">
               <el-input v-model="form.publicAddr" placeholder="如 1.2.3.4 或 frp.example.com" />
-              <span class="hint">供 frpc 自动生成 serverAddr，留空回退到面板地址</span>
+              <span class="hint">供 frpc 生成 serverAddr，留空用面板地址</span>
             </el-form-item>
 
             <el-form-item>
               <template #label>
                 <span class="lb">监听地址 bindAddr</span>
-                <FieldHelp :doc="DOC.serverConfig" text="服务端监听地址，用于接收 frpc 连接，默认 0.0.0.0。" />
+                <FieldHelp :doc="DOC.serverConfig" text="默认 0.0.0.0" />
               </template>
               <el-input v-model="form.bindAddr" placeholder="0.0.0.0" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">监听端口 bindPort</span>
-                <FieldHelp :doc="DOC.serverConfig" text="服务端监听端口，默认 7000，frpc 需连接该端口。" />
+                <FieldHelp :doc="DOC.serverConfig" text="默认 7000，frpc 连接此端口" />
               </template>
               <el-input-number v-model="form.bindPort" :min="1" :max="65535" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">KCP 端口 kcpBindPort</span>
-                <FieldHelp :doc="DOC.serverConfig" text="KCP 协议监听端口，用于接收使用 KCP 协议的 frpc 连接。" />
+                <FieldHelp :doc="DOC.serverConfig" text="接收 KCP 协议连接" />
               </template>
               <el-input-number v-model="form.kcpBindPort" :min="0" :max="65535" controls-position="right" />
               <span class="hint">0 表示不启用</span>
@@ -353,7 +396,7 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">QUIC 端口 quicBindPort</span>
-                <FieldHelp :doc="DOC.serverConfig" text="QUIC 协议监听端口，用于接收使用 QUIC 协议的 frpc 连接。" />
+                <FieldHelp :doc="DOC.serverConfig" text="接收 QUIC 协议连接" />
               </template>
               <el-input-number v-model="form.quicBindPort" :min="0" :max="65535" controls-position="right" />
               <span class="hint">0 表示不启用</span>
@@ -361,51 +404,51 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">代理出口地址 proxyBindAddr</span>
-                <FieldHelp :doc="DOC.serverConfig" text="代理监听地址，可让代理监听在不同网卡，默认同 bindAddr。" />
+                <FieldHelp :doc="DOC.serverConfig" text="留空同 bindAddr" />
               </template>
               <el-input v-model="form.proxyBindAddr" placeholder="留空使用 bindAddr" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">HTTP 虚拟主机端口</span>
-                <FieldHelp :doc="DOC.featureVirtualHost" text="vhostHTTPPort，HTTP 类型代理监听的端口，启用后才支持 HTTP 代理。" />
+                <FieldHelp :doc="DOC.featureVirtualHost" text="vhostHTTPPort，0 表示不启用" />
               </template>
               <el-input-number v-model="form.vhostHttpPort" :min="0" :max="65535" />
-              <span class="hint">vhostHTTPPort，0 表示不启用 HTTP 代理</span>
+              <span class="hint">0 表示不启用</span>
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">HTTP 空闲超时(秒)</span>
-                <FieldHelp :doc="DOC.serverConfig" text="vhostHTTPTimeout，HTTP 代理在服务端的 ResponseHeader 超时，默认 60s。" />
+                <FieldHelp :doc="DOC.serverConfig" text="vhostHTTPTimeout，默认 60" />
               </template>
               <el-input-number v-model="form.vhostHttpTimeout" :min="0" controls-position="right" />
-              <span class="hint">vhostHTTPTimeout，0 使用 frp 默认 60</span>
+              <span class="hint">0 使用默认 60</span>
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">HTTPS 虚拟主机端口</span>
-                <FieldHelp :doc="DOC.featureVirtualHost" text="vhostHTTPSPort，HTTPS 类型代理监听的端口，启用后才支持 HTTPS 代理。" />
+                <FieldHelp :doc="DOC.featureVirtualHost" text="vhostHTTPSPort，0 表示不启用" />
               </template>
               <el-input-number v-model="form.vhostHttpsPort" :min="0" :max="65535" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">子域名后缀 subDomainHost</span>
-                <FieldHelp :doc="DOC.featureVirtualHost" text="二级域名后缀，配置后 frpc 可用 subdomain 生成访问域名。" />
+                <FieldHelp :doc="DOC.featureSubdomain" text="配置后 frpc 可用 subdomain 生成域名" />
               </template>
               <el-input v-model="form.subdomainHost" placeholder="如 example.com" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">自定义 404 页面</span>
-                <FieldHelp :doc="DOC.serverConfig" text="custom404Page，自定义 404 错误页面地址。" />
+                <FieldHelp :doc="DOC.serverConfig" text="custom404Page，404 页面地址" />
               </template>
               <el-input v-model="form.custom404Page" placeholder="如 /etc/frp/404.html" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">tcpmux HTTP 端口</span>
-                <FieldHelp :doc="DOC.serverConfig" text="tcpmuxHTTPConnectPort，tcpmux 类型且复用器为 httpconnect 的代理监听端口。" />
+                <FieldHelp :doc="DOC.serverConfig" text="tcpmuxHTTPConnectPort，0 表示不启用" />
               </template>
               <el-input-number v-model="form.tcpmuxHttpConnectPort" :min="0" :max="65535" controls-position="right" />
               <span class="hint">vhost 端口不可用时可用此端口</span>
@@ -413,7 +456,7 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">tcpmux 透传</span>
-                <FieldHelp :doc="DOC.serverConfig" text="tcpmuxPassthrough，tcpmux 类型代理是否透传 CONNECT 请求。" />
+                <FieldHelp :doc="DOC.serverConfig" text="tcpmuxPassthrough，透传 CONNECT 请求" />
               </template>
               <el-switch v-model="form.tcpmuxPassthrough" />
             </el-form-item>
@@ -423,24 +466,51 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">认证方式 auth.method</span>
-                <FieldHelp :doc="DOC.serverAuth" text="鉴权方式，可选 token 或 oidc，默认 token。" />
+                <FieldHelp :doc="DOC.serverAuth" text="token 或 oidc，默认 token" />
               </template>
               <el-select v-model="form.authMethod">
                 <el-option label="token" value="token" />
                 <el-option label="oidc" value="oidc" />
               </el-select>
             </el-form-item>
-            <el-form-item v-if="form.authMethod === 'token'">
-              <template #label>
-                <span class="lb">认证 Token</span>
-                <FieldHelp :doc="DOC.serverAuth" text="auth.token，客户端需设置相同值才能鉴权通过。" />
-              </template>
-              <el-input v-model="form.authToken" show-password placeholder="留空自动生成" />
-            </el-form-item>
+        <el-form-item v-if="form.authMethod === 'token'">
+          <template #label>
+            <span class="lb">认证 Token</span>
+            <FieldHelp :doc="DOC.serverAuth" text="auth.token，客户端须填相同值" />
+          </template>
+          <el-input v-model="form.authToken" show-password placeholder="留空自动生成" />
+        </el-form-item>
+        <el-form-item v-if="form.authMethod === 'token'">
+          <template #label>
+            <span class="lb">Token 来源 tokenSource</span>
+            <FieldHelp :doc="DOC.serverAuth" text="tokenSource.type，与上面的 token 互斥" />
+          </template>
+          <el-select v-model="form.authTokenSourceType" clearable placeholder="直接写在上方" style="width: 140px">
+            <el-option label="file" value="file" />
+          </el-select>
+          <el-input
+            v-if="form.authTokenSourceType"
+            v-model="form.authTokenSourcePath"
+            placeholder="token 文件路径，如 /etc/frp/token"
+            style="width: 280px; margin-left: 8px"
+          />
+        </el-form-item>
+        <el-form-item>
+          <template #label>
+            <span class="lb">服务端插件 httpPlugins</span>
+            <FieldHelp :doc="DOC.serverConfig" text="JSON 数组，留空不使用插件" />
+          </template>
+          <el-input
+            v-model="form.authHttpPlugins"
+            type="textarea"
+            :rows="3"
+            placeholder='[{"name":"user-manager","addr":"127.0.0.1:9000","path":"/handler","ops":["Login"]}]'
+          />
+        </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">授权范围 additionalScopes</span>
-                <FieldHelp :doc="DOC.serverAuth" text="鉴权信息附加范围，可选 HeartBeats 与 NewWorkConns。" />
+                <FieldHelp :doc="DOC.serverAuth" text="可选 HeartBeats / NewWorkConns" />
               </template>
               <el-input v-model="form.authAdditionalScopes" placeholder="HeartBeats,NewWorkConns" />
             </el-form-item>
@@ -449,28 +519,28 @@ onMounted(load)
               <el-form-item>
                 <template #label>
                   <span class="lb">OIDC Issuer</span>
-                  <FieldHelp :doc="DOC.serverOidc" text="oidc.issuer，OIDC 签发者（Issuer）地址。" />
+                  <FieldHelp :doc="DOC.serverOidc" text="oidc.issuer，签发者地址" />
                 </template>
                 <el-input v-model="form.authOidcIssuer" placeholder="https://example.com:8443/dex" />
               </el-form-item>
               <el-form-item>
                 <template #label>
                   <span class="lb">OIDC Audience</span>
-                  <FieldHelp :doc="DOC.serverOidc" text="oidc.audience，OIDC 受众标识。" />
+                  <FieldHelp :doc="DOC.serverOidc" text="oidc.audience，受众标识" />
                 </template>
                 <el-input v-model="form.authOidcAudience" />
               </el-form-item>
               <el-form-item>
                 <template #label>
                   <span class="lb">跳过过期校验</span>
-                  <FieldHelp :doc="DOC.serverOidc" text="oidc.skipExpiryCheck，是否跳过 Token 过期校验。" />
+                  <FieldHelp :doc="DOC.serverOidc" text="oidc.skipExpiryCheck" />
                 </template>
                 <el-switch v-model="form.authOidcSkipExpiryCheck" />
               </el-form-item>
               <el-form-item>
                 <template #label>
                   <span class="lb">跳过签发者校验</span>
-                  <FieldHelp :doc="DOC.serverOidc" text="oidc.skipIssuerCheck，是否跳过 Issuer 校验。" />
+                  <FieldHelp :doc="DOC.serverOidc" text="oidc.skipIssuerCheck" />
                 </template>
                 <el-switch v-model="form.authOidcSkipIssuerCheck" />
               </el-form-item>
@@ -481,22 +551,22 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">启用 Dashboard</span>
-                <FieldHelp :doc="DOC.commonWebServer" text="webServer 段，启用后可在浏览器查看 frps 状态与代理列表；关闭时配置中不写入该段。" />
+                <FieldHelp :doc="DOC.commonWebServer" text="关闭时不写入 webServer 段" />
               </template>
               <el-switch v-model="form.dashboardEnabled" />
-              <span class="hint">默认关闭；开启后请用下方随机密码登录</span>
+              <span class="hint">默认关闭，开启后用下方随机密码登录</span>
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">Dashboard 监听地址</span>
-                <FieldHelp :doc="DOC.commonWebServer" text="webServer.addr，监听地址，默认 127.0.0.1，留空按 0.0.0.0 处理。" />
+                <FieldHelp :doc="DOC.commonWebServer" text="webServer.addr，默认 127.0.0.1" />
               </template>
               <el-input v-model="form.dashboardAddr" placeholder="留空为 0.0.0.0" :disabled="!form.dashboardEnabled" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">Dashboard 端口</span>
-                <FieldHelp :doc="DOC.commonWebServer" text="webServer.port，Dashboard 监听端口，常用 7500。" />
+                <FieldHelp :doc="DOC.commonWebServer" text="webServer.port，常用 7500" />
               </template>
               <el-input-number
                 v-model="form.dashboardPort"
@@ -508,14 +578,14 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">Dashboard 用户名</span>
-                <FieldHelp :doc="DOC.commonWebServer" text="webServer.user，HTTP BasicAuth 用户名。" />
+                <FieldHelp :doc="DOC.commonWebServer" text="webServer.user，BasicAuth 用户名" />
               </template>
               <el-input v-model="form.dashboardUser" :disabled="!form.dashboardEnabled" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">Dashboard 密码</span>
-                <FieldHelp :doc="DOC.commonWebServer" text="webServer.password，HTTP BasicAuth 密码，默认已生成 8 位随机密码。" />
+                <FieldHelp :doc="DOC.commonWebServer" text="webServer.password，已预置随机密码" />
               </template>
               <el-input v-model="form.dashboardPwd" show-password :disabled="!form.dashboardEnabled" style="width: 240px" />
               <el-button link type="primary" @click="regenDashboardPwd">随机生成</el-button>
@@ -524,7 +594,7 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">静态资源目录</span>
-                <FieldHelp :doc="DOC.commonWebServer" text="webServer.assetsDir，自定义 Dashboard 前端静态资源目录。" />
+                <FieldHelp :doc="DOC.commonWebServer" text="webServer.assetsDir，静态资源目录" />
               </template>
               <el-input
                 v-model="form.dashboardAssetsDir"
@@ -535,28 +605,28 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">pprof 调试接口</span>
-                <FieldHelp :doc="DOC.commonWebServer" text="webServer.pprofEnable，启用 Go pprof 调试接口。" />
+                <FieldHelp :doc="DOC.commonWebServer" text="webServer.pprofEnable，启用 pprof" />
               </template>
               <el-switch v-model="form.dashboardPprofEnable" :disabled="!form.dashboardEnabled" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">Dashboard 证书</span>
-                <FieldHelp :doc="DOC.commonTls" text="webServer.tls.certFile，Dashboard HTTPS 证书文件。" />
+                <FieldHelp :doc="DOC.commonTls" text="webServer.tls.certFile，HTTPS 证书" />
               </template>
               <el-input v-model="form.dashboardTlsCertFile" placeholder="certFile" :disabled="!form.dashboardEnabled" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">Dashboard 私钥</span>
-                <FieldHelp :doc="DOC.commonTls" text="webServer.tls.keyFile，填写证书后 Dashboard 走 HTTPS。" />
+                <FieldHelp :doc="DOC.commonTls" text="webServer.tls.keyFile，填后走 HTTPS" />
               </template>
               <el-input v-model="form.dashboardTlsKeyFile" placeholder="keyFile" :disabled="!form.dashboardEnabled" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">Prometheus 指标</span>
-                <FieldHelp :doc="DOC.serverConfig" text="enablePrometheus，是否提供 Prometheus 监控接口，需同时启用 Dashboard。" />
+                <FieldHelp :doc="DOC.serverConfig" text="enablePrometheus，需启用 Dashboard" />
               </template>
               <el-switch v-model="form.enablePrometheus" />
             </el-form-item>
@@ -566,75 +636,75 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">TCP 多路复用 tcpMux</span>
-                <FieldHelp :doc="DOC.serverTransport" text="transport.tcpMux，开启后仅用一个端口承载多条连接，推荐保持开启。" />
+                <FieldHelp :doc="DOC.serverTransport" text="transport.tcpMux，单端口多连接，建议开启" />
               </template>
               <el-switch v-model="form.tcpMux" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">多路复用保活间隔(秒)</span>
-                <FieldHelp :doc="DOC.serverTransport" text="tcpMuxKeepaliveInterval，TCP mux 心跳检查间隔，单位秒。" />
+                <FieldHelp :doc="DOC.serverTransport" text="tcpMuxKeepaliveInterval，秒" />
               </template>
               <el-input-number v-model="form.tcpMuxKeepaliveInterval" :min="0" controls-position="right" />
-              <span class="hint">0 使用 frp 默认 30</span>
+              <span class="hint">0 使用默认 30</span>
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">TCP 保活时间(秒)</span>
-                <FieldHelp :doc="DOC.serverTransport" text="tcpKeepalive，底层 TCP 连接的 keepalive 间隔，负数表示不启用。" />
+                <FieldHelp :doc="DOC.serverTransport" text="tcpKeepalive，负数表示不启用" />
               </template>
               <el-input-number v-model="form.tcpKeepalive" :min="0" controls-position="right" />
-              <span class="hint">tcpKeepalive，0 使用 frp 默认 7200</span>
+              <span class="hint">0 使用默认 7200</span>
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">连接池上限 maxPoolCount</span>
-                <FieldHelp :doc="DOC.serverTransport" text="maxPoolCount，允许客户端设置的最大连接池大小，默认 5。" />
+                <FieldHelp :doc="DOC.serverTransport" text="maxPoolCount，默认 5" />
               </template>
               <el-input-number v-model="form.maxPoolCount" :min="0" controls-position="right" />
-              <span class="hint">0 使用 frp 默认 5</span>
+              <span class="hint">0 使用默认 5</span>
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">心跳超时(秒)</span>
-                <FieldHelp :doc="DOC.serverTransport" text="heartbeatTimeout，服务端与客户端心跳连接的超时时间，默认 90。" />
+                <FieldHelp :doc="DOC.serverTransport" text="heartbeatTimeout，默认 90" />
               </template>
               <el-input-number v-model="form.heartbeatTimeout" :min="0" controls-position="right" />
-              <span class="hint">0 使用 frp 默认（启用 tcpMux 时为 -1）</span>
+              <span class="hint">0 使用默认（tcpMux 开启时为 -1）</span>
             </el-form-item>
 
             <el-form-item>
               <template #label>
                 <span class="lb">强制 TLS transport.tls</span>
-                <FieldHelp :doc="DOC.serverTls" text="transport.tls.force，只接受启用了 TLS 的客户端连接。" />
+                <FieldHelp :doc="DOC.serverTls" text="transport.tls.force，只接受 TLS 连接" />
               </template>
               <el-switch v-model="form.tlsForce" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">服务端证书</span>
-                <FieldHelp :doc="DOC.commonTls" text="tls.certFile，TLS 证书文件路径。" />
+                <FieldHelp :doc="DOC.commonTls" text="tls.certFile，证书路径" />
               </template>
               <el-input v-model="form.tlsCertFile" placeholder="transport.tls.certFile" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">服务端私钥</span>
-                <FieldHelp :doc="DOC.commonTls" text="tls.keyFile，TLS 密钥文件路径。" />
+                <FieldHelp :doc="DOC.commonTls" text="tls.keyFile，私钥路径" />
               </template>
               <el-input v-model="form.tlsKeyFile" placeholder="transport.tls.keyFile" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">可信 CA</span>
-                <FieldHelp :doc="DOC.commonTls" text="tls.trustedCaFile，校验证书使用的 CA 证书文件。" />
+                <FieldHelp :doc="DOC.commonTls" text="tls.trustedCaFile，CA 证书" />
               </template>
               <el-input v-model="form.tlsTrustedCaFile" placeholder="transport.tls.trustedCaFile" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">TLS ServerName</span>
-                <FieldHelp :doc="DOC.commonTls" text="tls.serverName，为空则不校验证书 hostname。" />
+                <FieldHelp :doc="DOC.commonTls" text="tls.serverName，留空则不校验" />
               </template>
               <el-input v-model="form.tlsServerName" placeholder="为空则不校验证书 hostname" />
             </el-form-item>
@@ -642,21 +712,21 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">QUIC 保活周期(秒)</span>
-                <FieldHelp :doc="DOC.commonQuic" text="transport.quic.keepalivePeriod，默认 10 秒。" />
+                <FieldHelp :doc="DOC.commonQuic" text="quic.keepalivePeriod，默认 10" />
               </template>
               <el-input-number v-model="form.quicKeepalivePeriod" :min="0" controls-position="right" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">QUIC 空闲超时(秒)</span>
-                <FieldHelp :doc="DOC.commonQuic" text="transport.quic.maxIdleTimeout，默认 30 秒。" />
+                <FieldHelp :doc="DOC.commonQuic" text="quic.maxIdleTimeout，默认 30" />
               </template>
               <el-input-number v-model="form.quicMaxIdleTimeout" :min="0" controls-position="right" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">QUIC 最大流数</span>
-                <FieldHelp :doc="DOC.commonQuic" text="transport.quic.maxIncomingStreams，默认 100000。" />
+                <FieldHelp :doc="DOC.commonQuic" text="quic.maxIncomingStreams，默认 10 万" />
               </template>
               <el-input-number v-model="form.quicMaxIncomingStreams" :min="0" controls-position="right" />
             </el-form-item>
@@ -666,42 +736,42 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">允许端口范围 allowPorts</span>
-                <FieldHelp :doc="DOC.serverConfig" text="allowPorts，允许代理绑定的服务端端口范围，如 20000-30000,30001。" />
+                <FieldHelp :doc="DOC.serverConfig" text="allowPorts，如 20000-30000" />
               </template>
               <el-input v-model="form.allowPorts" placeholder="如 20000-30000,30001" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">单客户端端口上限</span>
-                <FieldHelp :doc="DOC.serverConfig" text="maxPortsPerClient，限制单个客户端最大同时存在的代理数，0 表示不限制。" />
+                <FieldHelp :doc="DOC.serverConfig" text="maxPortsPerClient，0 不限制" />
               </template>
               <el-input-number v-model="form.maxPortsPerClient" :min="0" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">返回详细错误给客户端</span>
-                <FieldHelp :doc="DOC.serverConfig" text="detailedErrorsToClient，是否向客户端返回详细错误信息，默认开启。" />
+                <FieldHelp :doc="DOC.serverConfig" text="detailedErrorsToClient，默认开启" />
               </template>
               <el-switch v-model="form.detailedErrorsToClient" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">用户连接超时(秒)</span>
-                <FieldHelp :doc="DOC.serverConfig" text="userConnTimeout，用户建立连接后等待客户端响应的超时时间，默认 10 秒。" />
+                <FieldHelp :doc="DOC.serverConfig" text="userConnTimeout，默认 10" />
               </template>
               <el-input-number v-model="form.userConnTimeout" :min="0" controls-position="right" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">UDP 包大小</span>
-                <FieldHelp :doc="DOC.serverConfig" text="udpPacketSize，代理 UDP 时支持的最大包长度，默认 1500，需与客户端一致。" />
+                <FieldHelp :doc="DOC.serverConfig" text="udpPacketSize，默认 1500，需与客户端一致" />
               </template>
               <el-input-number v-model="form.udpPacketSize" :min="0" controls-position="right" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">打洞数据保留(小时)</span>
-                <FieldHelp :doc="DOC.serverConfig" text="natholeAnalysisDataReserveHours，打洞策略数据保留时间，默认 168 小时。" />
+                <FieldHelp :doc="DOC.serverConfig" text="natholeAnalysisDataReserveHours，默认 168" />
               </template>
               <el-input-number v-model="form.natholeAnalysisDataReserveHours" :min="0" controls-position="right" />
             </el-form-item>
@@ -709,7 +779,7 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">日志级别</span>
-                <FieldHelp :doc="DOC.commonLog" text="log.level，日志级别 trace/debug/info/warn/error，默认 info。" />
+                <FieldHelp :doc="DOC.commonLog" text="log.level，默认 info" />
               </template>
               <el-select v-model="form.logLevel">
                 <el-option label="trace" value="trace" />
@@ -722,14 +792,14 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">日志保留天数</span>
-                <FieldHelp :doc="DOC.commonLog" text="log.maxDays，日志最多保留天数，默认 3 天。" />
+                <FieldHelp :doc="DOC.commonLog" text="log.maxDays，默认 3 天" />
               </template>
               <el-input-number v-model="form.logMaxDays" :min="0" :max="365" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">禁用日志颜色</span>
-                <FieldHelp :doc="DOC.commonLog" text="log.disablePrintColor，禁用标准输出中的日志颜色。" />
+                <FieldHelp :doc="DOC.commonLog" text="log.disablePrintColor，禁用颜色" />
               </template>
               <el-switch v-model="form.logDisablePrintColor" />
             </el-form-item>
@@ -744,7 +814,7 @@ onMounted(load)
                 :rows="5"
                 placeholder='例如：{ "bindPort": 7100 }'
               />
-              <span class="hint">合法的 JSON 对象，顶层字段会覆盖上方表单生成的值</span>
+              <span class="hint">顶层字段会覆盖上方表单生成的值</span>
             </el-form-item>
           </el-tab-pane>
 
@@ -752,14 +822,14 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">启用 SSH 隧道网关</span>
-                <FieldHelp :doc="DOC.serverSshGateway" text="sshTunnelGateway，通过 SSH 协议直接访问 frps 上的代理（frp v0.68+）。" />
+                <FieldHelp :doc="DOC.serverSshGateway" text="sshTunnelGateway，需 frp v0.68+" />
               </template>
               <el-switch :model-value="form.sshGatewayBindPort > 0" @update:model-value="toggleSshGateway" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">SSH 监听端口</span>
-                <FieldHelp :doc="DOC.serverSshGateway" text="sshTunnelGateway.bindPort，SSH 服务器监听端口（必填）。" />
+                <FieldHelp :doc="DOC.serverSshGateway" text="sshTunnelGateway.bindPort，必填" />
               </template>
               <el-input-number
                 v-model="form.sshGatewayBindPort"
@@ -771,21 +841,21 @@ onMounted(load)
             <el-form-item>
               <template #label>
                 <span class="lb">SSH 私钥文件</span>
-                <FieldHelp :doc="DOC.serverSshGateway" text="privateKeyFile，SSH 服务器私钥文件路径。" />
+                <FieldHelp :doc="DOC.serverSshGateway" text="privateKeyFile，SSH 私钥" />
               </template>
               <el-input v-model="form.sshGatewayPrivateKeyFile" placeholder="/etc/frp/ssh_host_ed25519_key" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">自动生成私钥路径</span>
-                <FieldHelp :doc="DOC.serverSshGateway" text="autoGenPrivateKeyPath，私钥不存在时自动生成并保存的路径。" />
+                <FieldHelp :doc="DOC.serverSshGateway" text="autoGenPrivateKeyPath，自动生成私钥" />
               </template>
               <el-input v-model="form.sshGatewayAutoGenPrivateKeyPath" placeholder="/var/lib/frp/ssh_tunnel_gateway" />
             </el-form-item>
             <el-form-item>
               <template #label>
                 <span class="lb">公钥认证文件</span>
-                <FieldHelp :doc="DOC.serverSshGateway" text="authorizedKeysFile，SSH 客户端授权密钥文件，留空则不进行客户端鉴权。" />
+                <FieldHelp :doc="DOC.serverSshGateway" text="authorizedKeysFile，留空则不鉴权" />
               </template>
               <el-input v-model="form.sshGatewayAuthorizedKeysFile" placeholder="/etc/frp/authorized_keys" />
             </el-form-item>
@@ -798,7 +868,7 @@ onMounted(load)
       <el-button type="warning" :disabled="isNew" @click="doAction('restart')">重启</el-button>
       <el-button type="danger" :disabled="isNew" @click="doAction('stop')">停止</el-button>
       <span v-if="isNew" class="hint">请先保存配置后再操作进程</span>
-      <span v-else-if="form.deployMode === 'agent'" class="hint">以上操作将通过托管 Agent 在远端执行</span>
+      <span v-else-if="form.deployMode === 'agent'" class="hint">将通过托管 Agent 在远端执行</span>
     </el-card>
 
     <el-dialog v-model="previewVisible" title="frps.json 预览" width="720px">

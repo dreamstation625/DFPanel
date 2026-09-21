@@ -14,6 +14,7 @@ type Config struct {
 	TokenExpireHrs int    // 登录有效期（小时）
 	PublicURL      string // 面板对外访问地址，用于生成 Agent 安装命令与 frpc 连接地址
 	AgentImage     string // 生成 Docker 安装命令时使用的 Agent 镜像
+	FRPDownloadBase string // frp 二进制下载地址模板（可指向镜像源），设置页可覆盖
 	Version        string // 面板版本号（构建时经 ldflags 注入，仅用于展示）
 }
 
@@ -34,6 +35,8 @@ func Load() *Config {
 		"面板对外访问地址（如 http://1.2.3.4:8080），留空时按请求地址推断")
 	flag.StringVar(&cfg.AgentImage, "agent-image", envOr("DFPANEL_AGENT_IMAGE", DefaultAgentImage),
 		"生成 Docker 安装命令时使用的 Agent 镜像")
+	flag.StringVar(&cfg.FRPDownloadBase, "frp-download-base", envOr("DFPANEL_FRP_DOWNLOAD_BASE", ""),
+		"frp 二进制下载地址模板，支持 {version} {asset} {os} {arch} 占位符（可指向镜像源；设置页中可覆盖）")
 	flag.Parse()
 
 	if abs, err := filepath.Abs(cfg.DataDir); err == nil {

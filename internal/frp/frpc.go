@@ -11,7 +11,9 @@ type AuthClientConfig struct {
 	Method           string                `json:"method,omitempty"` // token / oidc，frp 默认 token
 	AdditionalScopes []string              `json:"additionalScopes,omitempty"`
 	Token            string                `json:"token,omitempty"`
-	OIDC             *AuthOIDCClientConfig `json:"oidc,omitempty"`
+	// TokenSource 与 Token 互斥：把 token 的来源交给文件或命令
+	TokenSource *ValueSource          `json:"tokenSource,omitempty"`
+	OIDC        *AuthOIDCClientConfig `json:"oidc,omitempty"`
 }
 
 // AuthOIDCClientConfig auth.method = oidc 时生效

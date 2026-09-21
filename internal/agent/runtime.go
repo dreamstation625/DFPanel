@@ -20,6 +20,9 @@ type Spec struct {
 	ConfigPath    string
 	LogPath       string
 	ContainerName string
+	// MountBinary docker 运行时专用：宿主机上的 frp 二进制，挂进容器并覆盖 entrypoint。
+	// 为空表示不介入，容器沿用镜像自带的 frp（存量部署保持原行为）。
+	MountBinary string
 }
 
 // Controller 负责单个 frps / frpc 的启停与日志，屏蔽「进程 / 容器」两种运行时差异
@@ -99,23 +102,46 @@ func (c *Controller) startDocker() error {
 	// 容器不可变：每次启动前移除旧容器，保证使用新配置
 	_ = exec.Command("docker", "rm", "-f", c.spec.ContainerName).Run()
 
-	args := []string{"run", "-d", "--name", c.spec.ContainerName, "--restart", "unless-stopped",
-		"-v", fmt.Sprintf("%s:%s:ro", c.spec.ConfigPath, c.spec.ConfigPath)}
-	// --network host 仅 Linux 支持，Windows / macOS 退化为默认网络
-	if runtime.GOOS == "linux" {
-		args = append(args, "--network", "host")
-	}
 	image := c.spec.Image
 	if image == "" {
 		image = DefaultFrpcImage
 	}
-	args = append(args, image, "-c", c.spec.ConfigPath)
+	// --network host 仅 Linux 支持，Windows / macOS 退化为默认网络
+	args := dockerRunArgs(c.spec, image, runtime.GOOS == "linux")
 
 	out, err := exec.Command("docker", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("启动 %s 容器失败：%v，输出：%s", c.spec.Kind, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// dockerRunArgs 构造 frp 容器的 docker run 参数。
+//
+// 拆成纯函数是为了能在没有 docker 的环境下单测校验参数顺序
+// （--entrypoint 必须位于镜像名之前，`-c 配置` 必须位于镜像名之后）。
+//
+// 版本替换：把宿主机上的 frp 二进制挂进容器，并显式覆盖 entrypoint 指到它。
+// 不猜镜像里的二进制路径，因此对任意 frp 镜像都成立（镜像只当运行时底座）；
+// MountBinary 为空时不介入，容器继续用镜像自带的 frp —— 存量 docker 部署零影响。
+func dockerRunArgs(spec Spec, image string, hostNetwork bool) []string {
+	args := []string{"run", "-d", "--name", spec.ContainerName, "--restart", "unless-stopped",
+		"-v", fmt.Sprintf("%s:%s:ro", spec.ConfigPath, spec.ConfigPath)}
+	if hostNetwork {
+		args = append(args, "--network", "host")
+	}
+
+	entrypoint := ""
+	if fi, err := os.Stat(spec.MountBinary); err == nil && fi.Size() > 0 {
+		inContainer := ContainerBinaryInContainer(spec.Kind)
+		args = append(args, "-v", fmt.Sprintf("%s:%s:ro", spec.MountBinary, inContainer))
+		entrypoint = inContainer
+	}
+	if entrypoint != "" {
+		args = append(args, "--entrypoint", entrypoint)
+	}
+
+	return append(args, image, "-c", spec.ConfigPath)
 }
 
 // Stop 停止并清理

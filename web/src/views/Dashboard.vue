@@ -57,7 +57,7 @@ onMounted(load)
       show-icon
       :closable="false"
       title="frps 二进制未就绪"
-      description="本机托管模式需要在面板 bin 目录下放置 frps；如需在其它服务器运行，请改用“远端 Agent 托管”。"
+      description="可在「设置」中下载，或手动放入面板的 bin 目录。"
       style="margin-bottom: 16px"
     />
 

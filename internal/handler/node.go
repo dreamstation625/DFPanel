@@ -54,6 +54,11 @@ func (h *NodeHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法：" + err.Error()})
 		return
 	}
+	// 客户端节点必须由 Agent 承载，因此要求先有可用的 Agent
+	if err := requireManagedAgent(n.AgentID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	n.ID = 0
 	if n.Name == "" {
 		n.Name = "节点-" + time.Now().Format("0102150405")
@@ -72,6 +77,24 @@ func (h *NodeHandler) Create(c *gin.Context) {
 	c.JSON(http.StatusOK, n)
 }
 
+// requireManagedAgent 校验节点绑定的托管 Agent 是否可用。
+//
+// 客户端节点（frpc）永远由 Agent 承载，没有 Agent 就没有任何机器能跑这个 frpc，
+// 所以创建 / 保存节点时必须已经存在一个具备 frpc 角色的 Agent。
+func requireManagedAgent(agentID uint) error {
+	if agentID == 0 {
+		return errString("请先选择托管 Agent：客户端节点必须由 Agent 承载，请先到「Agent 管理」创建并在目标机器上安装 Agent")
+	}
+	var a model.Agent
+	if err := database.DB.First(&a, agentID).Error; err != nil {
+		return errString("所选的 Agent 不存在，请重新选择")
+	}
+	if !a.HasRole("frpc") {
+		return errString("Agent「" + a.Name + "」未启用 frpc 角色，无法承载客户端节点；请先在该 Agent 上勾选 frpc 角色")
+	}
+	return nil
+}
+
 // Update PUT /api/nodes/:id
 func (h *NodeHandler) Update(c *gin.Context) {
 	var old model.Node
@@ -82,6 +105,11 @@ func (h *NodeHandler) Update(c *gin.Context) {
 	var req model.Node
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
+		return
+	}
+	// 与创建保持一致：保存时也必须绑定可用的 Agent（顺带让历史遗留的未绑定节点补绑）
+	if err := requireManagedAgent(req.AgentID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	req.ID = old.ID
@@ -347,11 +375,13 @@ func (h *NodeHandler) buildConfig(node *model.Node) (string, error) {
 	}
 	var proxies []model.Proxy
 	database.DB.Where("node_id = ?", node.ID).Find(&proxies)
+	var visitors []model.Visitor
+	database.DB.Where("node_id = ?", node.ID).Find(&visitors)
 
 	if !hasServer {
-		return frp.BuildFrpcFromNode(node, nil, proxies, h.publicAddr())
+		return frp.BuildFrpcFromNode(node, nil, proxies, visitors, h.publicAddr())
 	}
-	return frp.BuildFrpcFromNode(node, &server, proxies, h.publicAddr())
+	return frp.BuildFrpcFromNode(node, &server, proxies, visitors, h.publicAddr())
 }
 
 func (h *NodeHandler) publicAddr() string {

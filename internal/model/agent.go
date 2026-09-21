@@ -17,6 +17,17 @@ type Agent struct {
 
 	// Roles 该 Agent 允许承载的角色，逗号分隔：frps / frpc，可同时具备
 	Roles string `gorm:"size:64;default:frpc" json:"roles"`
+	// Runtime 运行时：process（直起子进程）/ docker（起容器）；由 Agent 上报
+	Runtime string `gorm:"size:16" json:"runtime"`
+
+	// 以下三个字段是 frp（frps/frpc）的版本信息，与该 Agent 自身的 Version 不是一回事。
+	// 版本粒度按 Agent 统一：该 Agent 上的 frps 与 frpc 共用一个 frp 版本。
+	// FRPVersion 为空表示不管理，此时沿用机器上现有的二进制，仅提示可更新。
+	FRPVersion          string `gorm:"size:32" json:"frpVersion"`
+	FRPInstalledVersion string `gorm:"size:32" json:"frpInstalledVersion"` // active 槽位实际版本（心跳上报）
+	FRPCachedVersions   string `gorm:"size:512" json:"frpCachedVersions"`  // 已缓存版本，逗号分隔（心跳上报）
+	// FRPUpdatedAt 最近一次版本切换时间
+	FRPUpdatedAt *time.Time `json:"frpUpdatedAt"`
 
 	// 运行时上报
 	OS         string     `gorm:"size:32" json:"os"`

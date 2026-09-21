@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"dfpanel/internal/database"
+	"dfpanel/internal/frp"
 	"dfpanel/internal/model"
 )
 
@@ -115,7 +116,10 @@ func (h *ProxyHandler) Delete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
 }
 
-// validateProxy 按隧道类型校验必填字段，并补默认值
+// validateProxy 按隧道类型校验必填字段，并补默认值 / 归一化取值
+//
+// 注意：这里只管「面板侧」的取值合法性，字段该落在 frp 的哪一层由
+// internal/frp/frpc_build.go 负责（写错层级会被 frp 判为未知字段）。
 func validateProxy(p *model.Proxy) error {
 	p.Type = strings.ToLower(strings.TrimSpace(p.Type))
 	if p.Type == "" {
@@ -140,13 +144,57 @@ func validateProxy(p *model.Proxy) error {
 		if strings.TrimSpace(p.CustomDomains) == "" && strings.TrimSpace(p.Subdomain) == "" {
 			return errString("http / https 隧道必须填写自定义域名或子域名")
 		}
-	case "stcp", "sudp", "xtcp":
-		// 需要 secretKey 建立点对点连接；名称作为 group 使用
-		if strings.TrimSpace(p.GroupName) == "" {
-			p.GroupName = p.Name
+	case "tcpmux":
+		if strings.TrimSpace(p.CustomDomains) == "" {
+			return errString("tcpmux 隧道必须填写自定义域名（作为 httpconnect 的路由标识）")
 		}
+		if p.Multiplexer == "" {
+			p.Multiplexer = "httpconnect"
+		}
+		if p.Multiplexer != "httpconnect" {
+			return errString("tcpmux 的复用器目前只支持 httpconnect")
+		}
+	case "stcp", "sudp", "xtcp":
+		// 点对点隧道靠 serverName + secretKey 配对，与 loadBalancer 分组无关；
+		// secretKey 在 frp 里可留空，但留空时同用户的任何访问端都能连，界面上给出提示即可，
+		// 这里不做强制，避免存量数据无法保存。
 	default:
 		return errString("不支持的隧道类型：" + p.Type)
+	}
+
+	// PROXY protocol 只允许 v1 / v2（取值不对会让 frpc 拒绝加载）
+	if v := strings.TrimSpace(p.ProxyProtocolVersion); v != "" {
+		v = strings.ToLower(v)
+		if v != "v1" && v != "v2" {
+			return errString("PROXY protocol 版本只能是 v1 或 v2")
+		}
+		p.ProxyProtocolVersion = v
+	}
+	if v := strings.TrimSpace(p.BandwidthLimitMode); v != "" {
+		v = strings.ToLower(v)
+		if v != "client" && v != "server" {
+			return errString("限速位置只能是 client 或 server")
+		}
+		p.BandwidthLimitMode = v
+	}
+	if v := strings.TrimSpace(p.HealthCheckType); v != "" {
+		v = strings.ToLower(v)
+		if v != "tcp" && v != "http" {
+			return errString("健康检查类型只能是 tcp 或 http")
+		}
+		p.HealthCheckType = v
+		if v == "http" && strings.TrimSpace(p.HealthCheckPath) == "" {
+			p.HealthCheckPath = "/"
+		}
+	}
+
+	// 插件参数是 JSON 对象，提前校验，避免坏配置走到下发阶段才被 frpc 拒绝
+	if strings.TrimSpace(p.PluginType) != "" {
+		if _, err := frp.ParseJSONObject(p.PluginConfig); err != nil {
+			return errString(err.Error())
+		}
+	} else if strings.TrimSpace(p.PluginConfig) != "" {
+		return errString("填写了插件参数但未选择插件类型")
 	}
 	return nil
 }

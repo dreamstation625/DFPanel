@@ -35,7 +35,7 @@ function canRollback(row: ConfigVersionItem) {
       show-icon
       :closable="false"
       title="当前显示面板侧的版本记录"
-      description="Agent 离线时无法读取其本地快照。此列表仍可用于回滚（面板会重新下发该版本配置）。"
+      description="Agent 离线，无法读取本地快照；仍可回滚（面板会重新下发）。"
       style="margin-bottom: 12px"
     />
 

@@ -30,12 +30,24 @@ const (
 	CmdLog      = "log"
 	CmdRollback = "rollback" // 回滚到指定历史版本（payload: {"targetVersion":N}）
 	CmdVersions = "versions" // 列出 Agent 本地保存的历史配置版本
+
+	// CmdFrpDownload 下载指定版本的 frp 二进制并落为版本化文件，不切换 active、不重启
+	// payload: {"version":"0.62.1"}
+	CmdFrpDownload = "frp_download"
+	// CmdFrpActivate 把指定版本切为 active 槽位并重启该 Agent 上全部托管实例
+	// payload: {"version":"0.62.1"}
+	CmdFrpActivate = "frp_activate"
+
+	// CmdFrpStatus 汇报 Agent 侧的 frp 版本状态（active 版本 + 已缓存版本）
+	CmdFrpStatus = "frp_status"
 )
 
 // 目标类型
 const (
 	TargetServer = "server" // frps 服务端
 	TargetNode   = "node"   // frpc 节点
+	// TargetAgent 表示指令作用于整个 Agent（如 frp 版本管理），此时 TargetID 为 0
+	TargetAgent = "agent"
 )
 
 // DefaultSkew 允许的时钟偏移
@@ -73,6 +85,12 @@ type HeartbeatData struct {
 	Version  string        `json:"version"`
 	Hostname string        `json:"hostname"`
 	Targets  []TargetState `json:"targets"`
+	// Runtime 该 Agent 的运行时：process（直接起子进程）/ docker（起容器）
+	Runtime string `json:"runtime,omitempty"`
+	// FrpVersion active 槽位当前生效的 frp 版本（该 Agent 上 frps 与 frpc 共用一个版本）
+	FrpVersion string `json:"frpVersion,omitempty"`
+	// FrpCached 本地已缓存的 frp 版本列表
+	FrpCached []string `json:"frpCached,omitempty"`
 }
 
 // HistoryEntry Agent 本地保存的一份历史配置
@@ -97,6 +115,12 @@ type ResultData struct {
 	Unverified bool `json:"unverified,omitempty"`
 	// Versions CmdVersions 指令返回的历史版本列表
 	Versions []HistoryEntry `json:"versions,omitempty"`
+	// FrpVersion 当前 active 版本的 frp 版本号
+	FrpVersion string `json:"frpVersion,omitempty"`
+	// FrpCached 本地已缓存的 frp 版本列表
+	FrpCached []string `json:"frpCached,omitempty"`
+	// RollbackFrpVersion 版本切换失败时回退到的 frp 版本
+	RollbackFrpVersion string `json:"rollbackFrpVersion,omitempty"`
 }
 
 // Sign 生成请求签名：HMAC-SHA256(secret, "nodeKey.ts")

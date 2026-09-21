@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -72,6 +73,7 @@ func (h *AgentHandler) Register(c *gin.Context) {
 		OS       string `json:"os"`
 		Arch     string `json:"arch"`
 		Roles    string `json:"roles"`
+		Runtime  string `json:"runtime"`
 	}
 	_ = c.ShouldBindJSON(&req)
 
@@ -95,6 +97,9 @@ func (h *AgentHandler) Register(c *gin.Context) {
 	}
 	if req.Roles != "" {
 		updates["roles"] = req.Roles
+	}
+	if req.Runtime != "" {
+		updates["runtime"] = req.Runtime
 	}
 	if err := database.DB.Model(&model.Agent{}).Where("id = ?", agent.ID).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "注册失败：" + err.Error()})
@@ -125,6 +130,23 @@ func (h *AgentHandler) Heartbeat(c *gin.Context) {
 		return
 	}
 	h.hub.UpdateState(agent.ID, hb, c.ClientIP())
+
+	// frp 版本与运行时信息随心跳落库，供界面在 Agent 离线时也能展示上次已知状态
+	if hb.FrpVersion != "" || len(hb.FrpCached) > 0 || hb.Runtime != "" {
+		updates := map[string]any{}
+		if hb.Runtime != "" {
+			updates["runtime"] = hb.Runtime
+		}
+		if hb.FrpVersion != "" {
+			updates["frp_installed_version"] = hb.FrpVersion
+		}
+		if len(hb.FrpCached) > 0 {
+			updates["frp_cached_versions"] = strings.Join(hb.FrpCached, ",")
+		}
+		if len(updates) > 0 {
+			_ = database.DB.Model(&model.Agent{}).Where("id = ?", agent.ID).Updates(updates).Error
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"serverTime": time.Now().Unix()})
 }
 

@@ -30,6 +30,11 @@ export interface FrpsServer {
   authMethod: string
   authToken: string
   authAdditionalScopes: string
+  /** tokenSource 与 authToken 互斥 */
+  authTokenSourceType: string
+  authTokenSourcePath: string
+  /** 服务端插件（httpPlugins），JSON 数组文本 */
+  authHttpPlugins: string
   authOidcIssuer: string
   authOidcAudience: string
   authOidcSkipExpiryCheck: boolean
@@ -117,6 +122,9 @@ export function emptyServer(): FrpsServer {
     authMethod: 'token',
     authToken: '',
     authAdditionalScopes: '',
+    authTokenSourceType: '',
+    authTokenSourcePath: '',
+    authHttpPlugins: '',
     authOidcIssuer: '',
     authOidcAudience: '',
     authOidcSkipExpiryCheck: false,
@@ -225,6 +233,8 @@ export interface AgentInfo {
   nodeKey: string
   secret: string
   roles: string
+  /** 运行时：process（直起子进程）/ docker（起容器） */
+  runtime: string
   os: string
   arch: string
   hostname: string
@@ -233,6 +243,13 @@ export interface AgentInfo {
   lastSeen: string | null
   remoteAddr: string
   lastError: string
+  /** frp（frps/frpc）期望版本，空表示不管理 */
+  frpVersion: string
+  /** frp active 槽位实际版本 */
+  frpInstalledVersion: string
+  /** 已缓存的 frp 版本，逗号分隔 */
+  frpCachedVersions: string
+  frpUpdatedAt: string | null
   createdAt: string
   updatedAt: string
   online?: boolean
@@ -246,12 +263,49 @@ export interface NodeInfo {
   groupName: string
   remark: string
   nodeKey: string
+  // 身份
+  clientId: string
+  user: string
+  // 连接
   serverAddr: string
   serverPort: number
+  natHoleStunServer: string
+  dnsServer: string
+  loginFailExit: boolean | null
+  // 鉴权
+  authMethod: string
   authToken: string
-  tlsEnable: boolean
+  authTokenSourceType: string
+  authTokenSourcePath: string
+  authOidcClientId: string
+  authOidcClientSecret: string
+  authOidcAudience: string
+  authOidcScope: string
+  authOidcTokenEndpointUrl: string
+  authOidcAdditionalParams: string
+  // transport
   protocol: string
-  user: string
+  wireProtocol: string
+  dialServerTimeout: number
+  dialServerKeepalive: number
+  connectServerLocalIp: string
+  proxyUrl: string
+  poolCount: number
+  tcpMux: boolean | null
+  tcpMuxKeepaliveInterval: number
+  heartbeatInterval: number
+  heartbeatTimeout: number
+  // transport.tls
+  tlsEnable: boolean
+  disableCustomTlsFirstByte: boolean | null
+  tlsCertFile: string
+  tlsKeyFile: string
+  tlsTrustedCaFile: string
+  tlsServerName: string
+  // 其他
+  udpPacketSize: number
+  metadatas: string
+
   agentId: number
   os: string
   arch: string
@@ -274,9 +328,62 @@ export interface ProxyConfig {
   remotePort: number
   customDomains: string
   subdomain: string
+  // 传输层
   useEncryption: boolean
   useCompression: boolean
+  /** PROXY protocol 版本：v1 / v2，留空表示不用 */
+  proxyProtocolVersion: string
+  bandwidthLimit: string
+  bandwidthLimitMode: string
+  natTraversalDisableAddrs: boolean
+  // 负载均衡
   group: string
+  // 点对点隧道
+  secretKey: string
+  allowUsers: string
+  // http / tcpmux
+  httpUser: string
+  httpPassword: string
+  locations: string
+  hostHeaderRewrite: string
+  routeByHttpUser: string
+  multiplexer: string
+  // 健康检查
+  healthCheckType: string
+  healthCheckTimeoutSeconds: number
+  healthCheckMaxFailed: number
+  healthCheckIntervalSeconds: number
+  healthCheckPath: string
+  // 元信息与插件
+  annotations: string
+  metadatas: string
+  pluginType: string
+  pluginConfig: string
+
+  enabled: boolean
+  createdAt?: string
+  updatedAt?: string
+}
+
+/** 访问端（点对点隧道的访问侧） */
+export interface VisitorInfo {
+  id: number
+  nodeId: number
+  name: string
+  type: string
+  serverName: string
+  serverUser: string
+  secretKey: string
+  bindAddr: string
+  bindPort: number
+  useEncryption: boolean
+  useCompression: boolean
+  keepTunnelOpen: boolean
+  maxRetriesAnHour: number
+  minRetryInterval: number
+  fallbackTo: string
+  fallbackTimeoutMs: number
+  natTraversalDisableAddrs: boolean
   enabled: boolean
   createdAt?: string
   updatedAt?: string
@@ -373,9 +480,102 @@ export const proxyApi = {
   remove: (id: number) => request.post(`/proxies/${id}/delete`),
 }
 
+/** 访问端：点对点隧道（stcp / sudp / xtcp）的访问侧，与服务侧隧道配套使用 */
+export const visitorApi = {
+  list: (nodeId: number) => request.get<unknown, VisitorInfo[]>(`/nodes/${nodeId}/visitors`),
+  create: (nodeId: number, data: Partial<VisitorInfo>) =>
+    request.post<unknown, VisitorInfo>(`/nodes/${nodeId}/visitors`, data),
+  update: (id: number, data: Partial<VisitorInfo>) =>
+    request.post<unknown, VisitorInfo>(`/visitors/${id}/update`, data),
+  remove: (id: number) => request.post(`/visitors/${id}/delete`),
+}
+
 export const versionApi = {
   list: (targetType: 'server' | 'node', targetId: number) =>
     request.get<unknown, ConfigVersionItem[]>('/config-versions', { params: { targetType, targetId } }),
+}
+
+// ---------- frp 版本管理与系统设置 ----------
+
+/** 系统设置（镜像源、手填版本、面板本机 frp 版本） */
+export interface SettingsValues {
+  /** 下载地址模板，支持 {version} {asset} {os} {arch} 占位符 */
+  frpDownloadBase: string
+  /** 手填兜底版本，逗号分隔 */
+  frpManualVersions: string
+  /** 面板本机 frps 使用的版本，空表示不管理 */
+  panelFrpVersion: string
+  /** 版本列表接口，固定为 GitHub 官方，只读 */
+  frpVersionApi: string
+  /** 默认模板，用于「恢复默认」 */
+  frpDownloadBaseDefault: string
+}
+
+/** 可选版本列表 */
+export interface FrpVersionsResult {
+  latest?: string
+  available: string[]
+  manual: string[]
+  cached: string[]
+  merged: string[]
+  api: string
+  download: string
+  message?: string
+}
+
+/** 某个目标的 frp 版本状态 */
+export interface FrpVersionState {
+  /** 期望版本（未设置表示不管理） */
+  expected: string
+  /** active 槽位实际版本 */
+  active: string
+  /** 本地已缓存版本 */
+  cached: string[]
+  /** 期望与实际不一致 */
+  updatable?: boolean
+  /** 缓存里有比当前更新的版本 */
+  outdated?: boolean
+  online?: boolean
+  updatedAt?: string | null
+  /** Agent 运行时可，process / docker */
+  runtime?: string
+  /** 附加说明（例如 docker 平台探测失败的原因） */
+  message?: string
+}
+
+/** frp 版本操作结果 */
+export interface FrpVersionResult {
+  ok?: boolean
+  message: string
+  queued?: boolean
+  rolledBack?: boolean
+  active?: string
+  cached?: string[]
+  expect?: string
+}
+
+// 版本切换要下载 + 重启 + 逐个健康探测，失败还会回滚，超时给足
+const FRP_VERSION_TIMEOUT = 420000
+
+export const settingApi = {
+  get: () => request.get<unknown, SettingsValues>('/settings'),
+  save: (data: Partial<SettingsValues>) => request.post<unknown, SettingsValues>('/settings', data),
+  frpVersions: () => request.get<unknown, FrpVersionsResult>('/frp-versions'),
+}
+
+export const frpVersionApi = {
+  /** 面板本机 frps 的版本状态 */
+  local: () => request.get<unknown, FrpVersionState>('/frp/local'),
+  localDownload: (version: string) =>
+    request.post<unknown, FrpVersionResult>('/frp/local/download', { version }, { timeout: FRP_VERSION_TIMEOUT }),
+  localActivate: (version: string) =>
+    request.post<unknown, FrpVersionResult>('/frp/local/activate', { version }, { timeout: FRP_VERSION_TIMEOUT }),
+  /** 某个 Agent 的 frp 版本状态 */
+  agent: (id: number) => request.get<unknown, FrpVersionState>(`/agents/${id}/frp`),
+  agentDownload: (id: number, version: string) =>
+    request.post<unknown, FrpVersionResult>(`/agents/${id}/frp/download`, { version }, { timeout: FRP_VERSION_TIMEOUT }),
+  agentActivate: (id: number, version: string) =>
+    request.post<unknown, FrpVersionResult>(`/agents/${id}/frp/activate`, { version }, { timeout: FRP_VERSION_TIMEOUT }),
 }
 
 /** 运行状态标签文案与颜色 */
