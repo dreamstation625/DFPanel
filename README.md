@@ -159,7 +159,7 @@ internal/
 web/                        Vue 3 + Element Plus 前端（vite 构建，产物嵌入二进制）
 docs/                       架构与部署文档
 Dockerfile  Dockerfile.agent  docker-compose*.yml
-.github/workflows/          CI：构建并推送 amd64 / arm64 镜像
+.github/workflows/          CI：Docker 镜像（docker.yml）、Release 二进制（release.yml）
 build.ps1  build.sh
 ```
 

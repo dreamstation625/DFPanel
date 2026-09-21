@@ -1,0 +1,242 @@
+name: Release
+
+# 发布 GitHub Release（二进制产物）：
+#   - 推送 v* 版本 tag（要求 tag 与 VERSION 一致）：git tag v0.0.1 && git push origin v0.0.1
+#   - 手动触发（workflow_dispatch，默认以当前 VERSION 发布/更新同名 Release）
+#
+# 与 docker.yml 的分工：
+#   docker.yml  -> 构建并推送 Docker 镜像（main 上 VERSION 变更 / v* tag）
+#   本 workflow  -> 编译多平台二进制（面板 + Agent），打包后发布到 GitHub Release
+#
+# 版本号取自根目录 VERSION 文件，构建时注入二进制：
+#   面板  -X main.version
+#   Agent -X dfpanel/internal/agent.Version
+# 预发布版本（0.0.1-beta.02、0.0.1-rc.1）会自动标记为 Pre-release。
+#
+# 所需权限：仓库 Settings -> Actions -> Workflow permissions 设为 Read and write
+# （或在本 workflow 顶层声明 permissions: contents: write，已声明）
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  # 发布流程不取消进行中的任务，避免上传一半的产物
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: 版本检查与编译
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      prerelease: ${{ steps.ver.outputs.prerelease }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 读取并校验版本号
+        id: ver
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d ' \n\r' < VERSION)"
+          if [ -z "$VERSION" ]; then
+            echo "VERSION 文件为空，请先写入版本号"
+            exit 1
+          fi
+          # 主版本必须为 x.y.z；预发布后缀允许字母/数字/点/连字符（如 beta、beta.2、beta.01、rc.1）
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
+            echo "VERSION 格式不正确：$VERSION（应形如 0.0.1 或 0.0.1-beta.02）"
+            exit 1
+          fi
+
+          PRERELEASE=false
+          case "$VERSION" in
+            *-*) PRERELEASE=true ;;
+          esac
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "本次发布版本：$VERSION（预发布=$PRERELEASE）"
+
+      - name: 校验 tag 与 VERSION 是否一致
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$TAG" != "${{ steps.ver.outputs.version }}" ]; then
+            echo "tag $GITHUB_REF_NAME 与 VERSION ${{ steps.ver.outputs.version }} 不一致"
+            exit 1
+          fi
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 生成前端占位目录（go:embed 需要 dist 存在）
+        run: mkdir -p web/dist && touch web/dist/index.html
+
+      - name: 编译（注入版本号）
+        run: |
+          go build -trimpath \
+            -ldflags "-X main.version=${{ steps.ver.outputs.version }} -X dfpanel/internal/agent.Version=${{ steps.ver.outputs.version }}" \
+            ./...
+
+      - name: 静态检查
+        run: go vet ./...
+
+  web:
+    name: 构建前端
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 安装依赖
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+
+      - name: 编译前端
+        working-directory: web
+        run: npm run build
+
+      # 所有平台共用同一份静态产物，避免每个矩阵任务重复跑 vite build
+      - name: 上传前端产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 1
+
+  build:
+    name: 编译 ${{ matrix.os }}/${{ matrix.arch }}
+    needs: [verify, web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: windows
+            arch: amd64
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 下载前端产物
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: 编译并打包
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          TARGET_OS: ${{ matrix.os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          EXT=""
+          [ "$TARGET_OS" = "windows" ] && EXT=".exe"
+
+          NAME="dfpanel-${VERSION}-${TARGET_OS}-${TARGET_ARCH}"
+          OUT="dist/${NAME}"
+          mkdir -p "$OUT"
+
+          # 面板：前端已通过 go:embed 打进二进制，单文件分发
+          CGO_ENABLED=0 GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH" go build -trimpath \
+            -ldflags "-X main.version=${VERSION}" \
+            -o "${OUT}/dfpanel${EXT}" .
+
+          # Agent：同一版本，独立二进制
+          CGO_ENABLED=0 GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH" go build -trimpath \
+            -ldflags "-X dfpanel/internal/agent.Version=${VERSION}" \
+            -o "${OUT}/dfpanel-agent${EXT}" ./cmd/agent
+
+          cp README.md LICENSE "${OUT}/"
+
+          cd dist
+          if [ "$TARGET_OS" = "windows" ]; then
+            zip -qr "${NAME}.zip" "${NAME}"
+            ARCHIVE="${NAME}.zip"
+          else
+            tar -czf "${NAME}.tar.gz" "${NAME}"
+            ARCHIVE="${NAME}.tar.gz"
+          fi
+          sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          echo "产物：${ARCHIVE}"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dfpanel-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: 发布 Release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载全部产物
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          pattern: dfpanel-*
+          merge-multiple: true
+
+      - name: 汇总校验值
+        run: |
+          set -euo pipefail
+          cd assets
+          cat *.sha256 > checksums.txt
+          rm -f *.sha256
+          ls -lh
+
+      - name: 创建/更新 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.verify.outputs.version }}
+          name: v${{ needs.verify.outputs.version }}
+          # 预发布版本（含 -beta / -rc 后缀）标记为 Pre-release，不设为最新版
+          prerelease: ${{ needs.verify.outputs.prerelease }}
+          # 依据上一个 Release 之间的提交自动生成更新日志
+          generate_release_notes: true
+          files: |
+            assets/*.tar.gz
+            assets/*.zip
+            assets/checksums.txt
+          fail_on_unmatched_files: true
