@@ -106,6 +106,8 @@ jobs:
     name: 面板镜像
     needs: verify
     runs-on: ubuntu-latest
+    # 兜底：镜像构建正常在 10 分钟内完成，超时说明卡死，及时失败而不是挂满 6 小时
+    timeout-minutes: 45
     environment: DOCKERHUB
     steps:
       - name: 检出代码
@@ -159,6 +161,7 @@ jobs:
     name: Agent 镜像
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     environment: DOCKERHUB
     steps:
       - name: 检出代码

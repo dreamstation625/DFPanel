@@ -3,7 +3,10 @@
 # 运行：docker run -d --network host -v dfpanel-data:/data -e DFPANEL_PUBLIC_URL=http://1.2.3.4:8080 dreamstation625/dfpanel:latest
 
 # ---------- 1. 前端 ----------
-FROM node:22-alpine AS web
+# 多架构构建时前端在「构建机架构」上执行（--platform=$BUILDPLATFORM）：
+# vite 产物是平台无关的静态文件，若放到 QEMU 模拟的目标架构里跑 npm/vite，
+# 会慢到超出 Actions job 时限（曾出现 6 小时超时被取消）。
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 WORKDIR /web
 # 用 npm ci 严格按 lock 安装，构建可复现。
 # 注意：package-lock.json 必须包含所有平台的 rollup / esbuild 原生包
@@ -17,18 +20,20 @@ COPY web/ ./
 RUN npm run build
 
 # ---------- 2. frps 二进制（供容器内的本地一体化模式使用） ----------
-FROM alpine:3.20 AS frp
+# 同样在构建机架构上执行下载与解包，只按目标架构选择要下载的二进制。
+FROM --platform=$BUILDPLATFORM alpine:3.20 AS frp
 ARG FRP_VERSION=latest
 ARG TARGETARCH=amd64
 RUN apk add --no-cache curl tar
 RUN set -eux; \
     if [ "$FRP_VERSION" = "latest" ]; then \
-      VER=$(curl -fsSL https://api.github.com/repos/fatedier/frp/releases/latest \
+      VER=$(curl -fsSL --max-time 60 --retry 3 --retry-delay 3 \
+        https://api.github.com/repos/fatedier/frp/releases/latest \
         | sed -n 's/.*"tag_name":[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' | head -n1); \
     else VER="$FRP_VERSION"; fi; \
     case "$TARGETARCH" in amd64) ARCH=amd64;; arm64) ARCH=arm64;; *) ARCH=arm;; esac; \
     echo "frp version: $VER ($ARCH)"; \
-    curl -fsSL -o /tmp/frp.tar.gz \
+    curl -fsSL --max-time 300 --retry 3 --retry-delay 5 -o /tmp/frp.tar.gz \
       "https://github.com/fatedier/frp/releases/download/v${VER}/frp_${VER}_linux_${ARCH}.tar.gz"; \
     mkdir -p /tmp/frp /out; \
     tar -xzf /tmp/frp.tar.gz -C /tmp/frp --strip-components=1; \
@@ -36,7 +41,11 @@ RUN set -eux; \
 
 # ---------- 3. 后端 ----------
 # 若本地 Go 版本与 go.mod 不一致导致镜像不存在，可把此处改成 golang:alpine
-FROM golang:1.26-alpine AS server
+# 在构建机架构上编译，再用 GOOS/GOARCH 交叉编译到目标架构（CGO 已关闭），
+# 这样 arm64 镜像不需要经过 QEMU 模拟，构建时间从小时级降到分钟级。
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS server
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 RUN apk add --no-cache git
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -44,7 +53,8 @@ RUN go mod download
 COPY . .
 COPY --from=web /web/dist ./web/dist
 # 版本号取自根目录 VERSION 文件，注入二进制
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$(cat VERSION)" -o /out/dfpanel .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+    -ldflags "-X main.version=$(cat VERSION)" -o /out/dfpanel .
 
 # ---------- 4. 运行 ----------
 FROM alpine:3.20
