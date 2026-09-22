@@ -127,7 +127,7 @@ docker compose -f docker-compose.agent.yml up -d
 
 ```bash
 docker run -d --name dfpanel-agent --restart unless-stopped \
-  -e DFPANEL_URL=http://<panel>:8080 \
+  -e DFPANEL_URL=http://<panel>:7226 \
   -e DFPANEL_NODE_KEY=<nodeKey> \
   -e DFPANEL_NODE_SECRET=<secret> \
   -e DFPANEL_ROLES=frps,frpc \
@@ -164,11 +164,11 @@ volumes:
 
 ```bash
 # Linux / macOS（systemd / launchd 自动注册）
-curl -fsSL http://<panel>:8080/install.sh | sudo bash -s -- \
-  --panel http://<panel>:8080 --node-key <KEY> --secret <SECRET> --roles frps,frpc
+curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- \
+  --panel http://<panel>:7226 --node-key <KEY> --secret <SECRET> --roles frps,frpc
 
 # Windows（计划任务开机自启）
-powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:8080/install.ps1 -OutFile install.ps1; .\install.ps1 -Panel http://<panel>:8080 -NodeKey <KEY> -NodeSecret <SECRET> -Roles frps,frpc"
+powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:7226/install.ps1 -OutFile install.ps1; .\install.ps1 -Panel http://<panel>:7226 -NodeKey <KEY> -NodeSecret <SECRET> -Roles frps,frpc"
 ```
 
 分发端点：
@@ -195,7 +195,7 @@ powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:8080/install.ps1
 启动面板时建议指定对外地址，否则安装命令只能按请求地址推断：
 
 ```bash
-dfpanel -listen :8080 -data ./data -public-url http://1.2.3.4:8080
+dfpanel -listen :7226 -data ./data -public-url http://1.2.3.4:7226
 dfpanel -version                                  # 查看版本号
 dfpanel -agent-image myrepo/dfpanel-agent:0.2.0   # 生成安装命令时使用的 Agent 镜像
 ```

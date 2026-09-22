@@ -16,7 +16,7 @@
 
 ```
 ① 部署           ② Web 配置 frps      ③ 创建 & 配置客户端
-中心服务器 / Docker ▶ 浏览器访问 :8080 ▶ 建节点 + 建隧道
+中心服务器 / Docker ▶ 浏览器访问 :7226 ▶ 建节点 + 建隧道
                      设置 frps 服务端     生成安装令牌
                                             │
                                             ▼
@@ -231,8 +231,8 @@ WS   /api/agent/ws            # 长连接（推送配置变更 / 请求转发）
 ### 6.1 形态一：二进制直接部署（Linux / macOS）
 
 ```bash
-curl -fsSL http://panel:8080/install.sh | sudo bash -s -- \
-  --panel http://panel:8080 \
+curl -fsSL http://panel:7226/install.sh | sudo bash -s -- \
+  --panel http://panel:7226 \
   --node-key <NODE_KEY>
 ```
 
@@ -262,8 +262,8 @@ Agent 启动后：
 ### 6.2 形态一：二进制直接部署（Windows）
 
 ```powershell
-irm http://panel:8080/install.ps1 -OutFile install.ps1
-.\install.ps1 -Panel http://panel:8080 -NodeKey <NODE_KEY>
+irm http://panel:7226/install.ps1 -OutFile install.ps1
+.\install.ps1 -Panel http://panel:7226 -NodeKey <NODE_KEY>
 ```
 
 - 使用 **WinSW / nssm** 注册系统服务，规避 `sc.exe` 的引号转义与无工作目录问题；
@@ -274,7 +274,7 @@ irm http://panel:8080/install.ps1 -OutFile install.ps1
 
 ```bash
 docker run -d --name frp-agent --restart always \
-  -e PANEL_URL=http://panel:8080 \
+  -e PANEL_URL=http://panel:7226 \
   -e NODE_KEY=<NODE_KEY> \
   -v frp-data:/etc/frp \
   --network host \
@@ -289,7 +289,7 @@ services:
     container_name: frp-agent
     restart: always
     environment:
-      PANEL_URL: http://panel:8080
+      PANEL_URL: http://panel:7226
       NODE_KEY: <NODE_KEY>
     volumes:
       - frp-data:/etc/frp        # agent.json / frpc.json 持久化
@@ -386,7 +386,7 @@ services:
     network_mode: host            # Linux 一键放行 frps 全部端口
     volumes:
       - ./data:/data              # DB + frps.json + 日志
-    # bridge 模式需显式映射：8080(面板) 7000(frps) 7500(dashboard) 80/443(vhost)
+    # bridge 模式需显式映射：7226(面板) 7000(frps) 7500(dashboard) 80/443(vhost)
 ```
 
 ### 8.3 分离式

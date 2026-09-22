@@ -60,7 +60,7 @@ param(
     # 交叉编译目标架构：amd64 / arm64
     [string]$TargetArch = "amd64",
     # -Run 时使用的监听地址
-    [string]$Listen = ":8080",
+    [string]$Listen = ":7226",
     # -Run 时使用的数据目录
     [string]$DataDir = "./data",
     # -Run 时使用的登录有效期（小时）

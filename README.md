@@ -94,12 +94,12 @@ Linux / macOS 用 `./build.sh`，参数等价（`--skip-frontend --agent --all-p
 ### 2. 启动面板
 
 ```bash
-./dfpanel -listen :8080 -data ./data -public-url http://1.2.3.4:8080
+./dfpanel -listen :7226 -data ./data -public-url http://1.2.3.4:7226
 ```
 
 | 参数 | 环境变量 | 默认值 | 说明 |
 |---|---|---|---|
-| `-listen` | `DFPANEL_LISTEN` | `:8080` | 监听地址 |
+| `-listen` | `DFPANEL_LISTEN` | `:7226` | 监听地址 |
 | `-data` | `DFPANEL_DATA_DIR` | `./data` | 数据目录（SQLite、配置、日志） |
 | `-public-url` | `DFPANEL_PUBLIC_URL` | 按请求推断 | 面板对外地址，用于生成安装命令与 frpc 连接地址 |
 | `-agent-image` | `DFPANEL_AGENT_IMAGE` | `dreamstation625/dfpanel-agent:latest` | 生成 Docker 安装命令时使用的 Agent 镜像 |
@@ -116,7 +116,7 @@ Docker：
 
 ```bash
 docker run -d --name dfpanel-agent --restart unless-stopped \
-  -e DFPANEL_URL=http://<panel>:8080 \
+  -e DFPANEL_URL=http://<panel>:7226 \
   -e DFPANEL_NODE_KEY=<nodeKey> \
   -e DFPANEL_NODE_SECRET=<secret> \
   -e DFPANEL_ROLES=frps,frpc \
@@ -129,8 +129,8 @@ docker run -d --name dfpanel-agent --restart unless-stopped \
 二进制（面板会生成带令牌的完整命令）：
 
 ```bash
-curl -fsSL http://<panel>:8080/install.sh | sudo bash -s -- \
-  --panel http://<panel>:8080 --node-key <KEY> --secret <SECRET> --roles frps,frpc
+curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- \
+  --panel http://<panel>:7226 --node-key <KEY> --secret <SECRET> --roles frps,frpc
 ```
 
 ### 4. Docker Compose

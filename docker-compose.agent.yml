@@ -16,7 +16,7 @@ services:
     network_mode: host
 
     environment:
-      DFPANEL_URL: "http://192.168.1.10:8080"
+      DFPANEL_URL: "http://192.168.1.10:7226"
       DFPANEL_NODE_KEY: "在此粘贴 nodeKey"
       DFPANEL_NODE_SECRET: "在此粘贴 secret"
       # 角色：frps / frpc / frps,frpc

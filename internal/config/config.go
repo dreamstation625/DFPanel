@@ -8,7 +8,7 @@ import (
 
 // Config 面板全局配置
 type Config struct {
-	Listen         string // 面板监听地址，如 :8080
+	Listen         string // 面板监听地址，如 :7226
 	DataDir        string // 数据目录（sqlite、frps 配置与日志）
 	JWTSecret      string // JWT 签名密钥
 	TokenExpireHrs int    // 登录有效期（小时）
@@ -23,7 +23,7 @@ const DefaultAgentImage = "dreamstation625/dfpanel-agent:latest"
 
 // Load 加载配置，优先级：命令行参数 > 环境变量 > 默认值
 func Load() *Config {
-	listen := envOr("DFPANEL_LISTEN", ":8080")
+	listen := envOr("DFPANEL_LISTEN", ":7226")
 	dataDir := envOr("DFPANEL_DATA_DIR", "./data")
 
 	cfg := &Config{}
@@ -32,7 +32,7 @@ func Load() *Config {
 	flag.StringVar(&cfg.JWTSecret, "jwt-secret", os.Getenv("DFPANEL_JWT_SECRET"), "JWT 密钥（留空自动生成并持久化）")
 	flag.IntVar(&cfg.TokenExpireHrs, "token-expire", 24, "登录有效期（小时）")
 	flag.StringVar(&cfg.PublicURL, "public-url", envOr("DFPANEL_PUBLIC_URL", ""),
-		"面板对外访问地址（如 http://1.2.3.4:8080），留空时按请求地址推断")
+		"面板对外访问地址（如 http://1.2.3.4:7226），留空时按请求地址推断")
 	flag.StringVar(&cfg.AgentImage, "agent-image", envOr("DFPANEL_AGENT_IMAGE", DefaultAgentImage),
 		"生成 Docker 安装命令时使用的 Agent 镜像")
 	flag.StringVar(&cfg.FRPDownloadBase, "frp-download-base", envOr("DFPANEL_FRP_DOWNLOAD_BASE", ""),

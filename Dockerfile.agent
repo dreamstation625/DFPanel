@@ -1,7 +1,7 @@
 # DFPanel Agent 镜像：一个容器同时可托管 frps 与 frpc
 # 构建：docker build -f Dockerfile.agent -t dreamstation625/dfpanel-agent:latest .
 # 运行：docker run -d --network host \
-#        -e DFPANEL_URL=http://panel:8080 -e DFPANEL_NODE_KEY=xxx -e DFPANEL_NODE_SECRET=yyy \
+#        -e DFPANEL_URL=http://panel:7226 -e DFPANEL_NODE_KEY=xxx -e DFPANEL_NODE_SECRET=yyy \
 #        -e DFPANEL_ROLES=frps,frpc -v dfpanel-agent-data:/var/lib/dfpanel-agent \
 #        dreamstation625/dfpanel-agent:latest
 #

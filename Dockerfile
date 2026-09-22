@@ -1,6 +1,6 @@
 # DFPanel 面板镜像（一体化：面板 + 内置 frps 二进制）
 # 构建：docker build -t dreamstation625/dfpanel:latest .
-# 运行：docker run -d --network host -v dfpanel-data:/data -e DFPANEL_PUBLIC_URL=http://1.2.3.4:8080 dreamstation625/dfpanel:latest
+# 运行：docker run -d --network host -v dfpanel-data:/data -e DFPANEL_PUBLIC_URL=http://1.2.3.4:7226 dreamstation625/dfpanel:latest
 
 # ---------- 1. 前端 ----------
 # 多架构构建时前端在「构建机架构」上执行（--platform=$BUILDPLATFORM）：
@@ -59,13 +59,13 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
 # ---------- 4. 运行 ----------
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata curl tar
-ENV DFPANEL_LISTEN=:8080 \
+ENV DFPANEL_LISTEN=:7226 \
     DFPANEL_DATA_DIR=/data \
     TZ=Asia/Shanghai
 WORKDIR /app
 COPY --from=server /out/dfpanel /usr/local/bin/dfpanel
 COPY --from=frp /out/frps /usr/local/bin/frps
 VOLUME ["/data"]
-# 8080 面板 / 7000 frps / 7500 dashboard / 80,443 vhost（host 网络时无需映射）
-EXPOSE 8080 7000 7500 80 443
+# 7226 面板 / 7000 frps / 7500 dashboard / 80,443 vhost（host 网络时无需映射）
+EXPOSE 7226 7000 7500 80 443
 ENTRYPOINT ["dfpanel"]

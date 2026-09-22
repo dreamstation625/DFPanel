@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # DFPanel Agent 一键安装脚本（Linux / macOS）
 # 用法：
-#   curl -fsSL http://<panel>:8080/install.sh | sudo bash -s -- \
-#     --panel http://<panel>:8080 --node-key <KEY> --secret <SECRET> --roles frps,frpc
+#   curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- \
+#     --panel http://<panel>:7226 --node-key <KEY> --secret <SECRET> --roles frps,frpc
 set -euo pipefail
 
 PANEL=""

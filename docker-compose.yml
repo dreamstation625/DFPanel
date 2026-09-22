@@ -1,6 +1,6 @@
 # DFPanel 面板一体化部署（面板 + 内置 frps）
 # 启动：docker compose up -d
-# 面板地址：http://<宿主IP>:8080
+# 面板地址：http://<宿主IP>:7226
 
 services:
   dfpanel:
@@ -15,7 +15,7 @@ services:
     # Windows / macOS 的 Docker 桌面版不支持 host 网络，请注释掉 network_mode 并启用下面的 ports
     network_mode: host
     # ports:
-    #   - "8080:8080"   # 面板
+    #   - "7226:7226"   # 面板
     #   - "7000:7000"   # frps 主端口
     #   - "7500:7500"   # frps dashboard
     #   - "80:80"       # vhost HTTP
@@ -24,8 +24,8 @@ services:
     volumes:
       - ./data:/data
     environment:
-      DFPANEL_LISTEN: ":8080"
+      DFPANEL_LISTEN: ":7226"
       DFPANEL_DATA_DIR: "/data"
       # 面板对外地址：用于生成 Agent 安装命令与 frpc 的 serverAddr，务必改成实际可访问地址
-      DFPANEL_PUBLIC_URL: "http://192.168.1.10:8080"
+      DFPANEL_PUBLIC_URL: "http://192.168.1.10:7226"
       TZ: "Asia/Shanghai"

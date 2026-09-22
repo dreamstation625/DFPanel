@@ -1,6 +1,6 @@
 # DFPanel Agent 一键安装脚本（Windows）
 # 用法：
-#   powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:8080/install.ps1 -OutFile install.ps1; .\install.ps1 -Panel http://<panel>:8080 -NodeKey <KEY> -NodeSecret <SECRET> -Roles frps,frpc"
+#   powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:7226/install.ps1 -OutFile install.ps1; .\install.ps1 -Panel http://<panel>:7226 -NodeKey <KEY> -NodeSecret <SECRET> -Roles frps,frpc"
 param(
     [Parameter(Mandatory = $true)][string]$Panel,
     [Parameter(Mandatory = $true)][string]$NodeKey,
