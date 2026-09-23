@@ -214,6 +214,11 @@ func binaryInstallCommand(panelURL string, agent *model.Agent, osName, roles, ru
 	}
 }
 
+// agentDataHostDir docker 运行时的数据目录：必须落在宿主机上。
+// frp 运行时要把容器里的配置与 frp 二进制 bind-mount 进 frp 容器，宿主机的 docker daemon
+// 得能直接看到这些文件；命名卷实际在 /var/lib/docker/volumes 下，路径对不上，挂不进去。
+const agentDataHostDir = "/opt/dfpanel-agent"
+
 func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime, image string) string {
 	lines := []string{
 		"docker run -d --name dfpanel-agent --restart unless-stopped \\",
@@ -222,10 +227,13 @@ func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime, image
 		fmt.Sprintf("  -e DFPANEL_NODE_SECRET=%s \\", agent.Secret),
 		fmt.Sprintf("  -e DFPANEL_ROLES=%s \\", roles),
 		fmt.Sprintf("  -e DFPANEL_RUNTIME=%s \\", runtime),
-		"  -v dfpanel-agent-data:/var/lib/dfpanel-agent \\",
 	}
 	if runtime == "docker" {
-		lines = append(lines, "  -v /var/run/docker.sock:/var/run/docker.sock \\")
+		lines = append(lines,
+			"  -v "+agentDataHostDir+":/var/lib/dfpanel-agent \\",
+			"  -v /var/run/docker.sock:/var/run/docker.sock \\")
+	} else {
+		lines = append(lines, "  -v dfpanel-agent-data:/var/lib/dfpanel-agent \\")
 	}
 	lines = append(lines,
 		"  --network host \\",
@@ -235,9 +243,13 @@ func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime, image
 }
 
 func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, image string) string {
-	volumes := "    volumes:\n      - dfpanel-agent-data:/var/lib/dfpanel-agent\n"
+	volumes := "      - dfpanel-agent-data:/var/lib/dfpanel-agent\n"
+	tail := "\nvolumes:\n  dfpanel-agent-data:\n"
 	if runtime == "docker" {
-		volumes += "      - /var/run/docker.sock:/var/run/docker.sock\n"
+		// 数据目录用宿主机路径，理由同 agentDataHostDir
+		volumes = "      - " + agentDataHostDir + ":/var/lib/dfpanel-agent\n" +
+			"      - /var/run/docker.sock:/var/run/docker.sock\n"
+		tail = ""
 	}
 	return fmt.Sprintf(`services:
   dfpanel-agent:
@@ -251,6 +263,6 @@ func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, i
       DFPANEL_NODE_SECRET: %s
       DFPANEL_ROLES: %s
       DFPANEL_RUNTIME: %s
-%svolumes:
-  dfpanel-agent-data:`, image, panelURL, agent.NodeKey, agent.Secret, roles, runtime, volumes)
+    volumes:
+%s%s`, image, panelURL, agent.NodeKey, agent.Secret, roles, runtime, volumes, tail)
 }

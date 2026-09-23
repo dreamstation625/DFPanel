@@ -22,13 +22,17 @@ services:
       # 角色：frps / frpc / frps,frpc
       DFPANEL_ROLES: "frps,frpc"
       # process = 容器内直接跑 frps/frpc 子进程（默认）；docker = 用 docker CLI 起容器
+      # 两种运行时的 frp 二进制都由面板下发，Agent 首次需要时自动下载
       DFPANEL_RUNTIME: "process"
       TZ: "Asia/Shanghai"
 
     volumes:
-      - agent-data:/var/lib/dfpanel-agent
-      # DFPANEL_RUNTIME=docker 时需要挂载 docker.sock
+      # DFPANEL_RUNTIME=docker：数据目录必须用宿主机路径 —— frp 容器要 bind-mount Agent
+      # 容器里的配置与 frp 二进制，宿主机的 docker daemon 得直接看得见这些文件；
+      # 命名卷在宿主机上没有对应路径，挂不进去。同时挂上 docker.sock：
+      # - /opt/dfpanel-agent:/var/lib/dfpanel-agent
       # - /var/run/docker.sock:/var/run/docker.sock
+      - agent-data:/var/lib/dfpanel-agent
 
 volumes:
   agent-data:

@@ -137,7 +137,7 @@ docker run -d --name dfpanel-agent --restart unless-stopped \
   dreamstation625/dfpanel-agent:latest
 ```
 
-镜像 `Dockerfile.agent` 已内置 frps / frpc 二进制，构建时自动从 frp 官方 release 获取（可用 `--build-arg FRP_VERSION=0.61.1` 固定版本）。
+镜像不内置 frp：frp 二进制由面板下发（面板侧抓取并缓存），Agent 首次需要时自动下载到数据目录 `bin/`。
 
 ### 5.3 frps / frpc 容器化运行（runtime=docker）
 
@@ -145,14 +145,16 @@ Agent 支持两种运行时，`DFPANEL_RUNTIME` 控制，对 frps 与 frpc 分�
 
 | 运行时 | 行为 | 适用 |
 |---|---|---|
-| `process`（默认） | Agent 直接拉起 `frps` / `frpc` 子进程 | 裸机、systemd、Agent 容器内置二进制 |
-| `docker` | Agent 用 docker CLI 起容器（挂载配置、host 网络、按容器状态做健康检查） | 希望隧道进程独立隔离、统一镜像管理 |
+| `process`（默认） | Agent 直接拉起 `frps` / `frpc` 子进程（二进制从面板下载） | 裸机、systemd、Agent 容器 |
+| `docker` | Agent 用 docker CLI 起容器（挂载下发的配置与 frp 二进制、覆盖 entrypoint、host 网络、按容器状态做健康检查） | 希望隧道进程独立隔离、统一镜像管理 |
 
-`runtime=docker` 时需要给 Agent 挂载 `/var/run/docker.sock`（镜像已内置 docker-cli）：
+`runtime=docker` 时需要给 Agent 挂载 `/var/run/docker.sock`（镜像已内置 docker-cli），
+并且**数据目录要用宿主机路径而不是命名卷** —— frp 容器要 bind-mount Agent 容器里的配置与二进制，
+宿主机的 docker daemon 必须能直接看到这些文件：
 
 ```yaml
 volumes:
-  - dfpanel-agent-data:/var/lib/dfpanel-agent
+  - /opt/dfpanel-agent:/var/lib/dfpanel-agent
   - /var/run/docker.sock:/var/run/docker.sock
 ```
 

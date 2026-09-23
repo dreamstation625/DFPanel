@@ -196,6 +196,39 @@ func (a *Agent) ensureVersionedBinary(kind, version string) (string, string, err
 	return dest, resolved, nil
 }
 
+// ensureRuntimeBinary 确保当前运行时需要的 frp 二进制就绪，缺失时从面板拉取。
+//
+// 镜像与安装包都不再内置 frp，二进制一律由面板下发：
+//   process → 版本化二进制切到 <dataDir>/<kind>[.exe] 槽位
+//   docker  → 切到容器槽位（<binDir>/<kind>-container-<os>-<arch>），启动时挂进容器
+//
+// 返回 true 表示这次新补了槽位 —— 控制器里缓存的 spec 还是「没有二进制」的老样子，
+// 调用方需要重建控制器才能带上挂载信息。
+func (a *Agent) ensureRuntimeBinary(kind string) (bool, error) {
+	if !a.cfg.HasRole(kind) {
+		return false, nil
+	}
+	slot, err := a.slotPath(kind)
+	if err != nil {
+		return false, err
+	}
+	if fi, statErr := os.Stat(slot); statErr == nil && fi.Size() > 0 {
+		return false, nil
+	}
+	goos, goarch, err := a.frpPlatform()
+	if err != nil {
+		return false, err
+	}
+	_, resolved, err := a.ensureVersionedBinary(kind, a.cfg.FRPVersion)
+	if err != nil {
+		return false, fmt.Errorf("从面板获取 %s 二进制失败：%v", kind, err)
+	}
+	if _, err := distrib.ActivateBinary(a.cfg.BinDir(), slot, kind, resolved, goos, goarch); err != nil {
+		return false, fmt.Errorf("激活 %s %s 失败：%v", kind, resolved, err)
+	}
+	return true, nil
+}
+
 // handleFrpDownload 下载指定版本的 frp 二进制到版本化目录：不切槽位、不重启
 func (a *Agent) handleFrpDownload(cmd proto.CommandData) proto.ResultData {
 	var req frpVersionPayload

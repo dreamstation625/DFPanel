@@ -160,6 +160,12 @@ func (a *Agent) handleCommand(cmd proto.CommandData) proto.ResultData {
 			Running:    a.controller(t).Running(),
 		}
 	case proto.CmdStart:
+		// 二进制缺失时先补齐（新补槽位要重建控制器，才能带上挂载信息）
+		if created, err := a.ensureRuntimeBinary(kindOf(t)); err != nil {
+			return proto.ResultData{Message: "启动失败：" + err.Error()}
+		} else if created {
+			a.resetControllers()
+		}
 		ctrl := a.controller(t)
 		if err := ctrl.Start(); err != nil {
 			return proto.ResultData{Message: "启动失败：" + err.Error()}
@@ -179,6 +185,11 @@ func (a *Agent) handleCommand(cmd proto.CommandData) proto.ResultData {
 		a.updateState(targetKey(t), func(s *instanceState) { s.ManualStopped = true })
 		return proto.ResultData{OK: true, Message: "已停止"}
 	case proto.CmdRestart:
+		if created, err := a.ensureRuntimeBinary(kindOf(t)); err != nil {
+			return proto.ResultData{Message: "重启失败：" + err.Error()}
+		} else if created {
+			a.resetControllers()
+		}
 		ctrl := a.controller(t)
 		if err := ctrl.Restart(); err != nil {
 			return proto.ResultData{Message: "重启失败：" + err.Error()}
@@ -261,6 +272,18 @@ func (a *Agent) bootstrap() {
 	entries, err := os.ReadDir(a.cfg.DataDir)
 	if err != nil {
 		return
+	}
+	// 二进制由面板下发，先把启用角色的槽位补齐，再决定拉起哪些实例
+	for _, kind := range a.enabledKinds() {
+		created, err := a.ensureRuntimeBinary(kind)
+		if err != nil {
+			log.Printf("准备 %s 二进制失败：%v", kind, err)
+			continue
+		}
+		if created {
+			log.Printf("已从面板获取 %s 二进制", kind)
+			a.resetControllers()
+		}
 	}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {

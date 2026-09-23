@@ -2,37 +2,18 @@
 # 构建：docker build -f Dockerfile.agent -t dreamstation625/dfpanel-agent:latest .
 # 运行：docker run -d --network host \
 #        -e DFPANEL_URL=http://panel:7226 -e DFPANEL_NODE_KEY=xxx -e DFPANEL_NODE_SECRET=yyy \
-#        -e DFPANEL_ROLES=frps,frpc -v dfpanel-agent-data:/var/lib/dfpanel-agent \
+#        -e DFPANEL_ROLES=frps,frpc -v /opt/dfpanel-agent:/var/lib/dfpanel-agent \
 #        dreamstation625/dfpanel-agent:latest
 #
 # 说明：
-#   DFPANEL_RUNTIME=process（默认）：容器内直接拉起 frps / frpc 子进程（镜像已内置二进制）
+#   镜像不内置 frp —— frp 二进制由面板下发，Agent 需要时自动从面板下载并缓存到数据目录。
+#   DFPANEL_RUNTIME=process（默认）：容器内直接拉起 frps / frpc 子进程
 #   DFPANEL_RUNTIME=docker          ：通过 docker CLI 以容器方式运行 frps / frpc，
-#                                     需要额外挂载 /var/run/docker.sock
+#                                     需要挂 /var/run/docker.sock，且数据目录要用**宿主机路径**
+#                                     不能用命名卷 —— 容器里的配置与二进制要让宿主机的
+#                                     docker daemon 也看得见，才能 bind-mount 进 frp 容器。
 
-# ---------- 1. frps / frpc 二进制 ----------
-# 在构建机架构上执行下载与解包，只按目标架构选择要下载的二进制，
-# 避免多架构构建时走 QEMU 模拟导致构建时间失控。
-FROM --platform=$BUILDPLATFORM alpine:3.20 AS frp
-ARG FRP_VERSION=latest
-ARG TARGETARCH=amd64
-RUN apk add --no-cache curl tar
-RUN set -eux; \
-    if [ "$FRP_VERSION" = "latest" ]; then \
-      VER=$(curl -fsSL --max-time 60 --retry 3 --retry-delay 3 \
-        https://api.github.com/repos/fatedier/frp/releases/latest \
-        | sed -n 's/.*"tag_name":[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' | head -n1); \
-    else VER="$FRP_VERSION"; fi; \
-    case "$TARGETARCH" in amd64) ARCH=amd64;; arm64) ARCH=arm64;; *) ARCH=arm;; esac; \
-    echo "frp version: $VER ($ARCH)"; \
-    curl -fsSL --max-time 300 --retry 3 --retry-delay 5 -o /tmp/frp.tar.gz \
-      "https://github.com/fatedier/frp/releases/download/v${VER}/frp_${VER}_linux_${ARCH}.tar.gz"; \
-    mkdir -p /tmp/frp /out; \
-    tar -xzf /tmp/frp.tar.gz -C /tmp/frp --strip-components=1; \
-    install -m 0755 /tmp/frp/frps /out/frps; \
-    install -m 0755 /tmp/frp/frpc /out/frpc
-
-# ---------- 2. 编译 Agent ----------
+# ---------- 编译 Agent ----------
 # 在构建机架构上交叉编译到目标架构（CGO 关闭），不经过 QEMU 模拟。
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS server
 RUN apk add --no-cache git
@@ -46,16 +27,14 @@ ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags "-X dfpanel/internal/agent.Version=$(if [ -s VERSION.agent ]; then cat VERSION.agent; else cat VERSION; fi)" -o /out/agent ./cmd/agent
 
-# ---------- 3. 运行 ----------
+# ---------- 运行 ----------
 FROM alpine:3.20
-# docker-cli：DFPANEL_RUNTIME=docker 时需要
+# docker-cli：DFPANEL_RUNTIME=docker 时需要；curl/tar 供拉取 frp 二进制后解包
 RUN apk add --no-cache ca-certificates tzdata curl tar docker-cli
 ENV DFPANEL_DATA_DIR=/var/lib/dfpanel-agent \
     DFPANEL_RUNTIME=process \
     DFPANEL_ROLES=frpc \
     TZ=Asia/Shanghai
 COPY --from=server /out/agent /usr/local/bin/dfpanel-agent
-COPY --from=frp /out/frps /usr/local/bin/frps
-COPY --from=frp /out/frpc /usr/local/bin/frpc
 VOLUME ["/var/lib/dfpanel-agent"]
 ENTRYPOINT ["dfpanel-agent"]

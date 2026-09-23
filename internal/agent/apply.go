@@ -8,11 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
-	"dfpanel/internal/distrib"
 	"dfpanel/internal/proto"
 )
 
@@ -49,17 +47,14 @@ func (a *Agent) ApplyConfig(t Target, content string, version int) ApplyOutcome 
 	cfgPath := a.cfg.ConfigPath(t)
 	bakPath := a.cfg.BackupPath(t)
 
-	// 进程运行时需要本地二进制，缺失时从面板拉取并切为 active 槽位
-	if a.cfg.Runtime == "process" {
-		if _, err := os.Stat(a.cfg.BinaryPath(kind)); err != nil {
-			_, resolved, err := a.client.DownloadBinary(kind, a.cfg.FRPVersion, runtime.GOOS, runtime.GOARCH)
-			if err != nil {
-				return ApplyOutcome{Message: fmt.Sprintf("获取 %s 二进制失败：%v", kind, err)}
-			}
-			if _, err := distrib.ActivateBinary(a.cfg.BinDir(), a.cfg.LocalBinaryPath(kind), kind, resolved, "", ""); err != nil {
-				return ApplyOutcome{Message: fmt.Sprintf("激活 %s %s 失败：%v", kind, resolved, err)}
-			}
-		}
+	// 二进制一律从面板拉取：process 用宿主平台，docker 用容器平台，缺失就补上
+	created, err := a.ensureRuntimeBinary(kind)
+	if err != nil {
+		return ApplyOutcome{Message: err.Error()}
+	}
+	if created {
+		// 槽位刚补上，重建控制器让新的二进制路径/挂载生效
+		a.resetControllers()
 	}
 
 	// 备份当前（可用）配置，作为回滚依据
