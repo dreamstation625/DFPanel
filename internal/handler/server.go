@@ -205,6 +205,7 @@ func (h *ServerHandler) Apply(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"message": res.Message, "queued": true, "version": version})
 			return
 		}
+		h.hub.SetTargetRunning(s.AgentID, proto.TargetServer, s.ID, res.Running)
 		status := "stopped"
 		if res.Running {
 			status = "running"
@@ -288,6 +289,7 @@ func (h *ServerHandler) lifecycle(c *gin.Context, cmdType string) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": res.Message})
 			return
 		}
+		h.hub.SetTargetRunning(s.AgentID, proto.TargetServer, s.ID, res.Running)
 		markServerStopped(s.ID, cmdType == proto.CmdStop)
 		c.JSON(http.StatusOK, gin.H{"message": res.Message, "status": h.statusOf(&s), "running": res.Running})
 		return

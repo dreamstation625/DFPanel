@@ -193,12 +193,14 @@ func (h *NodeHandler) Apply(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": res.Message, "queued": true, "version": version})
 		return
 	}
+	h.hub.SetTargetRunning(n.AgentID, proto.TargetNode, n.ID, res.Running)
 	c.JSON(http.StatusOK, gin.H{
 		"message":    res.Message,
 		"ok":         res.OK,
 		"rolledBack": res.RolledBack,
 		"version":    version,
 		"running":    res.Running,
+		"status":     h.statusOf(n),
 	})
 }
 
@@ -274,8 +276,9 @@ func (h *NodeHandler) control(c *gin.Context, cmdType string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": res.Message})
 		return
 	}
+	h.hub.SetTargetRunning(n.AgentID, proto.TargetNode, n.ID, res.Running)
 	markNodeStopped(n.ID, cmdType == proto.CmdStop)
-	c.JSON(http.StatusOK, gin.H{"message": res.Message, "running": res.Running})
+	c.JSON(http.StatusOK, gin.H{"message": res.Message, "running": res.Running, "status": h.statusOf(n)})
 }
 
 // Versions GET /api/nodes/:id/versions 查看托管 Agent 上保存的历史配置版本

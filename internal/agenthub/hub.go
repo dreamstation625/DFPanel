@@ -163,6 +163,27 @@ func (h *Hub) UpdateState(agentID uint, hb proto.HeartbeatData, remoteAddr strin
 	}
 }
 
+// SetTargetRunning 用指令结果立刻刷新单个实例的运行态。
+//
+// 心跳 30 秒一次，只靠它的话点完启停列表要过半分钟才对得上：
+// 应用配置明明成功了却还显示已停止，停止之后又还显示运行中。
+func (h *Hub) SetTargetRunning(agentID uint, targetType string, targetID uint, running bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	st, ok := h.states[agentID]
+	if !ok {
+		st = make(map[string]proto.TargetState)
+		h.states[agentID] = st
+	}
+	key := stateKey(targetType, targetID)
+	t := st[key]
+	t.TargetType = targetType
+	t.TargetID = targetID
+	t.Running = running
+	st[key] = t
+}
+
 // State 查询某个托管对象的最新运行态
 func (h *Hub) State(agentID uint, targetType string, targetID uint) (proto.TargetState, bool) {
 	h.mu.RLock()
