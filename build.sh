@@ -113,8 +113,13 @@ build_backend() {
     fi
 
     # 版本号统一取自根目录 VERSION 文件，构建时注入到二进制
+    # 版本号取自根目录：面板用 VERSION，Agent 用 VERSION.agent（没有该文件时回退 VERSION）
+    local ver_file="$ROOT/VERSION"
+    if [[ "$AGENT" -eq 1 && -f "$ROOT/VERSION.agent" ]]; then
+        ver_file="$ROOT/VERSION.agent"
+    fi
     local ver="dev"
-    [[ -f "$ROOT/VERSION" ]] && ver="$(tr -d ' \n\r' < "$ROOT/VERSION")"
+    [[ -f "$ver_file" ]] && ver="$(tr -d ' \n\r' < "$ver_file")"
     local ldflags
     if [[ "$AGENT" -eq 1 ]]; then
         ldflags="-X dfpanel/internal/agent.Version=$ver"
@@ -122,8 +127,12 @@ build_backend() {
         ldflags="-X main.version=$ver"
     fi
 
+    # Go 是原生程序，认不出 Git Bash 的 /e/... 路径（会被当成当前盘根目录下的 e），
+    # 所以传相对路径 —— CWD 已经切到 $ROOT 了
+    local out_rel="$OUT_FILE"
+    [[ "$OUT_FILE" == "$ROOT"/* ]] && out_rel="${OUT_FILE#"$ROOT"/}"
     (cd "$ROOT" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-        go build -trimpath -ldflags "$ldflags" -o "$OUT_FILE" "$pkg")
+        go build -trimpath -ldflags "$ldflags" -o "$out_rel" "$pkg")
     ok "$label 已生成: $OUT_FILE (版本 $ver)"
     OUTPUTS+=("$OUT_FILE")
     if [[ "$AGENT" -eq 0 && "$os" == "$(go env GOHOSTOS 2>/dev/null || echo linux)" ]]; then

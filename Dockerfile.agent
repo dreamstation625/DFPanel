@@ -42,8 +42,9 @@ RUN go mod download
 COPY . .
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
+# Agent 版本取自 VERSION.agent，没有该文件时跟随面板版本 VERSION
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
-    -ldflags "-X dfpanel/internal/agent.Version=$(cat VERSION)" -o /out/agent ./cmd/agent
+    -ldflags "-X dfpanel/internal/agent.Version=$(if [ -s VERSION.agent ]; then cat VERSION.agent; else cat VERSION; fi)" -o /out/agent ./cmd/agent
 
 # ---------- 3. 运行 ----------
 FROM alpine:3.20

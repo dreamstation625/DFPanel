@@ -33,6 +33,9 @@ frp 的可视化控制面板。面板与 frps / frpc 分离部署，通过 Agent
 
 开发环境：Go 1.26+、Node 18+。
 
+frps / frpc 是 Agent 拉起的子进程，但**不跟着 Agent 一起退出** —— Agent 重启或升级时隧道不中断。Agent 把子进程 pid 记在 `<数据目录>/<实例>.pid`，
+重启后先确认「进程还在、且确实是它」再接管，不会重复启动（否则会撞端口）。所以卸载 Agent 不会自动停掉这些实例，卸载脚本会按 pid 文件显式清理。
+
 ## 快速开始
 
 ```powershell
@@ -99,6 +102,12 @@ curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- \
 docker compose -f docker-compose.agent.yml up -d
 ```
 
+**卸载**：把命令换成 `--uninstall`（Windows 用 `-Uninstall`），默认保留数据目录，加 `--purge` / `-Purge` 连数据一起删。
+
+```bash
+curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- --uninstall [--purge]
+```
+
 ## 目录结构
 
 ```
@@ -109,6 +118,10 @@ docs/                             架构与部署文档
 Dockerfile*  docker-compose*.yml  build.ps1  build.sh
 .github/workflows/                CI：镜像构建、release 二进制
 ```
+
+## 版本与发布
+
+`VERSION` 是面板版本，`VERSION.agent` 是 Agent 版本（缺省跟随面板）。Agent 版本没变时 CI 不再重建 Agent 镜像。
 
 ## 文档
 

@@ -187,9 +187,13 @@ function Invoke-BackendBuild {
 
     Write-Step "编译$label ($OS/$Arch)"
 
-    # 版本号统一取自根目录 VERSION 文件，构建时注入到二进制
-    $ver = "dev"
+    # 版本号取自根目录：面板用 VERSION，Agent 用 VERSION.agent（没有该文件时回退 VERSION）
     $verFile = Join-Path $root "VERSION"
+    if ($Agent) {
+        $agentVerFile = Join-Path $root "VERSION.agent"
+        if (Test-Path $agentVerFile) { $verFile = $agentVerFile }
+    }
+    $ver = "dev"
     if (Test-Path $verFile) { $ver = (Get-Content $verFile -Raw -Encoding UTF8).Trim() }
     $ldflags = if ($Agent) { "-X dfpanel/internal/agent.Version=$ver" } else { "-X main.version=$ver" }
 
