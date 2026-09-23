@@ -9,7 +9,7 @@
 
 .EXAMPLE
     .\build.ps1
-        完整构建：前端 + 后端，产出 .\dfpanel.exe
+        完整构建：前端 + 后端；默认产出本机平台与 Linux amd64 两份面板，都在 .\output\ 下
 
 .EXAMPLE
     .\build.ps1 -SkipFrontend
@@ -29,11 +29,15 @@
 
 .EXAMPLE
     .\build.ps1 -Agent
-        编译 Agent，产出 .\dist\dfpanel-agent-<os>-<arch>[.exe]
+        编译 Agent，产出 .\output\dfpanel-agent-<os>-<arch>[.exe]
 
 .EXAMPLE
     .\build.ps1 -Agent -AllPlatforms
         一次产出 linux/amd64、linux/arm64、windows/amd64、darwin/arm64 四个 Agent
+
+.EXAMPLE
+    .\build.ps1 -AllPlatforms
+        不带 -Agent 时，一次产出 linux/amd64、linux/arm64、windows/amd64、darwin/arm64 四个面板
 
 .EXAMPLE
     .\build.ps1 -Docker -Agent -Image myrepo/dfpanel-agent:v1
@@ -79,7 +83,17 @@ $ErrorActionPreference = "Stop"
 
 $root = $PSScriptRoot
 $webDir = Join-Path $root "web"
+# 前端产物（vite），注意和下面的 output/ 区分开
 $distDir = Join-Path $webDir "dist"
+# 构建产物统一输出到这里
+$outDir = Join-Path $root "output"
+# 宿主平台：默认构建产出「本机平台 + linux/amd64」两份
+$hostOS = if ($env:OS -eq "Windows_NT") { "windows" } else { "linux" }
+# 本次构建产出的文件；HostArtifact 是本机平台那份，-Run 用
+$script:Outputs = @()
+$script:HostArtifact = ""
+# 用户显式 -OutFile 指定的文件：指定了就不再按平台自动命名
+$script:UserOutFile = $OutFile
 
 function Write-Step { param($Message) Write-Host "==> $Message" -ForegroundColor Cyan }
 function Write-Ok { param($Message) Write-Host "    $Message" -ForegroundColor Green }
@@ -161,16 +175,14 @@ function Invoke-BackendBuild {
     $base = if ($Agent) { "dfpanel-agent" } else { "dfpanel" }
 
     $ext = if ($OS -eq "windows") { ".exe" } else { "" }
-    # 多平台构建时每次调用都要重算产物名，否则多次构建会写到同一个文件
-    if ($AllPlatforms -or -not $script:OutFile) {
-        if ($Agent -or $AllPlatforms) {
-            New-Item -ItemType Directory -Force -Path (Join-Path $root "dist") | Out-Null
-            # PowerShell 5.1 的 Join-Path 只接受两个位置参数，需嵌套调用
-            $script:OutFile = Join-Path (Join-Path $root "dist") "$base-$OS-$Arch$ext"
-        }
-        else {
-            $script:OutFile = Join-Path $root "$base$ext"
-        }
+    # 产物统一放 output/ 并带平台后缀，每次调用都按当前平台重算 ——
+    # 一次构建会产出多个平台，沿用上一个名字会把两份写成同一个文件。
+    if ($script:UserOutFile) {
+        $script:OutFile = $script:UserOutFile
+    }
+    else {
+        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+        $script:OutFile = Join-Path $outDir "$base-$OS-$Arch$ext"
     }
 
     Write-Step "编译$label ($OS/$Arch)"
@@ -192,11 +204,17 @@ function Invoke-BackendBuild {
         }
     }
     finally {
-        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
+        # 清掉交叉编译用的进程级变量。
+        # 不用 Remove-Item Env:xxx：某些受管环境会把对 Env: 驱动器的删除当成文件删除来拦截。
+        foreach ($envName in @("GOOS", "GOARCH", "CGO_ENABLED")) {
+            [Environment]::SetEnvironmentVariable($envName, $null, "Process")
+        }
         Pop-Location
     }
 
     Write-Ok "$label 已生成: $script:OutFile"
+    $script:Outputs += $script:OutFile
+    if (-not $Agent -and $OS -eq $hostOS) { $script:HostArtifact = $script:OutFile }
 }
 
 function Invoke-DockerBuild {
@@ -255,20 +273,31 @@ try {
         Invoke-BackendBuild -OS "windows" -Arch "amd64"
         Invoke-BackendBuild -OS "darwin" -Arch "arm64"
     }
-    else {
+    elseif ($PSBoundParameters.ContainsKey("TargetOS") -or $PSBoundParameters.ContainsKey("TargetArch")) {
+        # 显式指定平台时只编那一个
         Invoke-BackendBuild
+    }
+    else {
+        # 默认：本机平台 + Linux amd64（服务器上跑的那份）
+        Invoke-BackendBuild -OS $hostOS -Arch "amd64"
+        if ($hostOS -ne "linux") {
+            Invoke-BackendBuild -OS "linux" -Arch "amd64"
+        }
     }
 
     Write-Host ""
-    Write-Host "构建完成，产物: $script:OutFile" -ForegroundColor Green
+    Write-Host "构建完成，产物：" -ForegroundColor Green
+    foreach ($artifact in $script:Outputs) {
+        Write-Host "  $artifact" -ForegroundColor Green
+    }
 
     if ($Run) {
-        if ($TargetOS -ne "windows") {
-            Write-WarnMsg "-Run 仅支持运行本地 Windows 产物，已跳过启动"
+        if (-not $script:HostArtifact) {
+            Write-WarnMsg "本次没有产出本机平台的面板，已跳过启动"
             exit 0
         }
         Write-Step "启动面板: http://localhost$Listen"
-        & $script:OutFile -listen $Listen -data $DataDir -token-expire $TokenExpire
+        & $script:HostArtifact -listen $Listen -data $DataDir -token-expire $TokenExpire
     }
 }
 finally {

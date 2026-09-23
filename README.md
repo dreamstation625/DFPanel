@@ -2,14 +2,14 @@
 
 frp 的可视化控制面板。面板与 frps / frpc 分离部署，通过 Agent 统一托管服务端与客户端。
 
-后端 Go，前端 Vue 3，打成一个二进制。
 
 ## 功能
 
 - **服务端** —— frps 的各项参数都在界面上改，能建多个，新建时自动挑同机空闲端口
 - **Agent** —— 一个进程同时托管多个 frps 和 frpc，进程 / 容器两种运行时，重启后自动恢复
 - **节点与隧道** —— tcp / udp / http / https / stcp / sudp / xtcp，含访问端配置，能下发、启停、看日志
-- **frp 版本** —— 二进制由面板统一下发，按实例切版本，下载源可换镜像
+- **自动启动** —— 服务端和节点都有开关，面板或 Agent 重启后自动拉起，手动停过的不拉
+- **frp 版本** —— 二进制由面板下发，按实例切版本，下载源可换镜像
 - **下发与回滚** —— 下发前先校验，出明确故障自动回滚上一版，也能看历史版本手动回滚
 
 ## 架构
@@ -28,15 +28,20 @@ frp 的可视化控制面板。面板与 frps / frpc 分离部署，通过 Agent
          └──────────────────────────┘
 ```
 
-面板只存配置和下发指令，跟 frps 不在一台机器上也行。
+
+开发语言：后端 Go 1.26（Gin + GORM + SQLite），前端 Vue 3.5 + Element Plus 2.8（Vite 6 构建）。
+
+开发环境：Go 1.26+、Node 18+。
 
 ## 快速开始
 
 ```powershell
-.\build.ps1                       # 前端 + 后端 -> dfpanel.exe
+.\build.ps1                       # 构建面板，出宿主平台和 linux amd64 两份（在 output/）
 .\build.ps1 -SkipFrontend         # 只编译后端（复用现有 web/dist）
-.\build.ps1 -Agent                # 编译 Agent -> dist/dfpanel-agent-<os>-<arch>
-.\build.ps1 -Agent -AllPlatforms  # 一次产出 linux/windows/darwin 共 4 个平台
+.\build.ps1 -TargetOS linux -TargetArch arm64   # 只交叉编译指定平台
+.\build.ps1 -AllPlatforms         # 一次产出 4 个平台的面板
+.\build.ps1 -Agent                # 编译 Agent -> output/dfpanel-agent-<os>-<arch>
+.\build.ps1 -Agent -AllPlatforms  # 一次产出 4 个平台的 Agent
 .\build.ps1 -Docker [-Agent]      # 构建面板 / Agent 镜像
 ```
 
@@ -117,4 +122,4 @@ Dockerfile*  docker-compose*.yml  build.ps1  build.sh
 
 ## 支持
 
-本项目由 **WorkBuddy** 大力支持。
+本项目由 **WorkBuddy** 支持。

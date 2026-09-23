@@ -183,7 +183,7 @@ powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:7226/install.ps1
 
 ```powershell
 .\build.ps1                       # 面板（前端 + 后端 -> dfpanel.exe）
-.\build.ps1 -Agent                # 编译 Agent -> dist/dfpanel-agent-<os>-<arch>
+.\build.ps1 -Agent                # 编译 Agent -> output/dfpanel-agent-<os>-<arch>
 .\build.ps1 -Agent -AllPlatforms  # 一次产出 linux/amd64、linux/arm64、windows/amd64、darwin/arm64
 .\build.ps1 -Docker               # 构建面板镜像 dreamstation625/dfpanel:latest
 .\build.ps1 -Docker -Agent        # 构建 Agent 镜像 dreamstation625/dfpanel-agent:latest

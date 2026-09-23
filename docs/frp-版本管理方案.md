@@ -281,7 +281,7 @@ docker run -d --name dfpanel-frps-1 --restart unless-stopped \
 - 单测：`internal/agent/dockerplat_test.go`（平台映射 + 路径约束）、
   `internal/agent/runtime_test.go`（docker run 参数顺序：`--entrypoint` 必须在镜像名前、
   `-c 配置` 在镜像名后、空槽位文件不覆盖、frpc 用独立挂载点）。
-- 重新构建：`dfpanel.exe` 与 `dist/dfpanel-agent-{linux-amd64,linux-arm64,windows-amd64,darwin-arm64}`。
+- 重新构建：`output/dfpanel-<本机平台>-amd64` 与 `output/dfpanel-agent-{linux-amd64,linux-arm64,windows-amd64,darwin-arm64}`。
 
 ### 本轮未覆盖（需在有 docker 的机器上验证）
 

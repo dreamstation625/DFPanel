@@ -2,7 +2,7 @@
 # DFPanel 构建脚本：构建前端 -> 编译 Go 服务端（前端产物通过 go:embed 内嵌进二进制）
 #
 # 用法:
-#   ./build.sh                       完整构建：前端 + 后端
+#   ./build.sh                       完整构建：前端 + 后端，产出本机平台与 Linux amd64 到 output/
 #   ./build.sh --skip-frontend       跳过前端构建，复用现有 web/dist
 #   ./build.sh --frontend-only       只构建前端
 #   ./build.sh --backend-only        只编译服务端
@@ -10,7 +10,8 @@
 #   ./build.sh --os linux --arch arm64   交叉编译
 #   ./build.sh --listen :9000 --run  指定监听端口并启动
 #   ./build.sh --agent              编译 Agent 程序（cmd/agent）
-#   ./build.sh --agent --all-platforms   一次编译 Agent 的多平台产物到 dist/
+#   ./build.sh --agent --all-platforms   一次编译 Agent 的多平台产物到 output/
+#   ./build.sh --all-platforms       一次编译面板的多平台产物到 output/（linux/amd64+arm64、windows/amd64、darwin/arm64）
 #   ./build.sh --docker             构建面板镜像 dreamstation625/dfpanel:latest
 #   ./build.sh --docker --agent     构建 Agent 镜像 dreamstation625/dfpanel-agent:latest
 #   ./build.sh --docker --image my/panel:v1   指定镜像标签
@@ -31,8 +32,11 @@ RUN=0
 AGENT=0
 DOCKER=0
 ALL_PLATFORMS=0
+PLATFORM_SET=0
 IMAGE=""
+OUTPUTS=()
 OUT_FILE=""
+USER_OUT_FILE=""
 LISTEN=":7226"
 DATA_DIR="./data"
 TOKEN_EXPIRE=24
@@ -43,9 +47,9 @@ while [[ $# -gt 0 ]]; do
         --frontend-only) FRONTEND_ONLY=1; shift ;;
         --backend-only)  BACKEND_ONLY=1; shift ;;
         --run)           RUN=1; shift ;;
-        --out)           OUT_FILE="$2"; shift 2 ;;
-        --os)            TARGET_OS="$2"; shift 2 ;;
-        --arch)          TARGET_ARCH="$2"; shift 2 ;;
+        --out)           USER_OUT_FILE="$2"; OUT_FILE="$2"; shift 2 ;;
+        --os)            TARGET_OS="$2"; PLATFORM_SET=1; shift 2 ;;
+        --arch)          TARGET_ARCH="$2"; PLATFORM_SET=1; shift 2 ;;
         --listen)        LISTEN="$2"; shift 2 ;;
         --data)          DATA_DIR="$2"; shift 2 ;;
         --token-expire)  TOKEN_EXPIRE="$2"; shift 2 ;;
@@ -99,13 +103,13 @@ build_backend() {
     local ext=""
     [[ "$os" == "windows" ]] && ext=".exe"
 
-    if [[ -z "$OUT_FILE" ]]; then
-        if [[ "$AGENT" -eq 1 || "$ALL_PLATFORMS" -eq 1 ]]; then
-            mkdir -p "$ROOT/dist"
-            OUT_FILE="$ROOT/dist/${base}-${os}-${arch}${ext}"
-        else
-            OUT_FILE="$ROOT/${base}${ext}"
-        fi
+    # 产物统一放 output/ 并带平台后缀，每次调用都按当前平台重算 ——
+    # 一次构建会产出多个平台，沿用上一个名字会把两份写成同一个文件
+    if [[ -n "$USER_OUT_FILE" ]]; then
+        OUT_FILE="$USER_OUT_FILE"
+    else
+        mkdir -p "$ROOT/output"
+        OUT_FILE="$ROOT/output/${base}-${os}-${arch}${ext}"
     fi
 
     # 版本号统一取自根目录 VERSION 文件，构建时注入到二进制
@@ -121,6 +125,10 @@ build_backend() {
     (cd "$ROOT" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
         go build -trimpath -ldflags "$ldflags" -o "$OUT_FILE" "$pkg")
     ok "$label 已生成: $OUT_FILE (版本 $ver)"
+    OUTPUTS+=("$OUT_FILE")
+    if [[ "$AGENT" -eq 0 && "$os" == "$(go env GOHOSTOS 2>/dev/null || echo linux)" ]]; then
+        HOST_ARTIFACT="$OUT_FILE"
+    fi
 }
 
 build_docker() {
@@ -159,19 +167,30 @@ if [[ "$DOCKER" -eq 1 ]]; then
     exit 0
 fi
 
+HOST_OS="$(go env GOHOSTOS 2>/dev/null || echo linux)"
 if [[ "$ALL_PLATFORMS" -eq 1 ]]; then
     OUT_FILE=""; TARGET_OS=linux;   TARGET_ARCH=amd64; build_backend
     OUT_FILE=""; TARGET_OS=linux;   TARGET_ARCH=arm64; build_backend
     OUT_FILE=""; TARGET_OS=windows; TARGET_ARCH=amd64; build_backend
     OUT_FILE=""; TARGET_OS=darwin;  TARGET_ARCH=arm64; build_backend
-else
+elif [[ "$PLATFORM_SET" -eq 1 || -n "${GOOS:-}" ]]; then
+    # 显式指定平台时只编那一个
     build_backend
+else
+    # 默认：本机平台 + Linux amd64（服务器上跑的那份）
+    OUT_FILE=""; TARGET_OS="$HOST_OS"; TARGET_ARCH=amd64; build_backend
+    if [[ "$HOST_OS" != "linux" ]]; then
+        OUT_FILE=""; TARGET_OS=linux; TARGET_ARCH=amd64; build_backend
+    fi
 fi
 
 echo ""
-echo "构建完成，产物: $OUT_FILE"
+echo "构建完成，产物:"
+for f in ${OUTPUTS[@]+"${OUTPUTS[@]}"}; do
+    echo "  $f"
+done
 
 if [[ "$RUN" -eq 1 ]]; then
     step "启动面板: http://localhost$LISTEN"
-    exec "$OUT_FILE" -listen "$LISTEN" -data "$DATA_DIR" -token-expire "$TOKEN_EXPIRE"
+    exec "${HOST_ARTIFACT:-$OUT_FILE}" -listen "$LISTEN" -data "$DATA_DIR" -token-expire "$TOKEN_EXPIRE"
 fi

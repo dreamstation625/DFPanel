@@ -4,6 +4,7 @@
 /dfpanel-agent
 /dfpanel-agent.exe
 /dist/
+/output/
 /web/dist/
 /web/node_modules/
 
