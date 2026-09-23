@@ -7,6 +7,8 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -310,6 +312,10 @@ func (h *ServerHandler) lifecycle(c *gin.Context, cmdType string) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		if reason := h.confirmRunning(uint(id)); reason != "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": reason})
+			return
+		}
 	case proto.CmdStop:
 		if err := h.mgr.Stop(uint(id)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -320,8 +326,39 @@ func (h *ServerHandler) lifecycle(c *gin.Context, cmdType string) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		if reason := h.confirmRunning(uint(id)); reason != "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": reason})
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "操作完成", "status": h.statusOf(&s)})
+}
+
+// confirmRunning 启动/重启后确认进程没有立刻退出，返回空字符串表示正常。
+//
+// frps 因端口占用、配置非法等原因起不来时会立即退出，而 Start 本身是成功的；
+// 不确认的话接口会乐观地返回 running，界面上看着像启动成功了。
+func (h *ServerHandler) confirmRunning(id uint) string {
+	for i := 0; i < 5; i++ {
+		time.Sleep(300 * time.Millisecond)
+		if !h.mgr.Running(id) {
+			return "frps 启动后立即退出" + h.tailSummary(id)
+		}
+	}
+	return ""
+}
+
+// tailSummary 日志尾部摘要，直接拼进报错里；界面提示的同时点「日志」能看到全文
+func (h *ServerHandler) tailSummary(id uint) string {
+	content, err := h.mgr.TailLog(id, 8*1024)
+	if err != nil || strings.TrimSpace(content) == "" {
+		return "，日志暂无可读内容"
+	}
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	if len(lines) > 3 {
+		lines = lines[len(lines)-3:]
+	}
+	return "，日志：" + strings.Join(lines, " | ")
 }
 
 // Log GET /api/servers/:id/log 查看日志尾部

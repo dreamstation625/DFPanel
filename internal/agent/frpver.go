@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"dfpanel/internal/distrib"
 	"dfpanel/internal/proto"
@@ -342,12 +343,34 @@ func (a *Agent) handleFrpActivate(cmd proto.CommandData) proto.ResultData {
 	if a.cfg.Runtime == "docker" {
 		mode = "（容器将挂载该二进制运行，镜像 tag 不变）"
 	}
+	restarted := countRunning(runningBefore)
+	detail := fmt.Sprintf("共重启 %d 个实例", restarted)
+	if restarted == 0 {
+		detail = "没有实例需要重启"
+	}
 	return proto.ResultData{
 		OK:         true,
-		Message:    fmt.Sprintf("已切换到 frp %s，共重启 %d 个实例%s", concrete, countRunning(runningBefore), mode),
+		Message:    fmt.Sprintf("已切换到 frp %s，%s%s", concrete, detail, mode),
 		FrpVersion: active,
 		FrpCached:  cached,
 	}
+}
+
+// confirmRunning 启动/重启后确认进程没有立刻退出，返回空字符串表示正常。
+//
+// frp 因端口占用、配置非法等原因起不来时会立即退出，而 Start 本身是成功的；
+// 不确认的话面板会收到「已启动」，界面上看着像启成功了。日志尾部会一起带回去。
+func (a *Agent) confirmRunning(t Target) string {
+	ctrl := a.controller(t)
+	kind := kindOf(t)
+	for i := 0; i < 5; i++ {
+		time.Sleep(300 * time.Millisecond)
+		if !ctrl.Running() {
+			logs, _ := ctrl.Logs(healthLogScanBytes)
+			return fmt.Sprintf("%s-%d 启动后立即退出（%s）", kind, t.ID, lastLines(logs, 3))
+		}
+	}
+	return ""
 }
 
 // startAndCheck 启动单个实例并做健康探测，返回 (失败原因, 是否通过)

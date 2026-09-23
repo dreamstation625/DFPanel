@@ -46,6 +46,22 @@ const activeLabel = computed(() => {
   return ''
 })
 
+/** 目标下已托管的实例数：0 表示切换只是换二进制，没有任何服务会被重启 */
+const instanceCount = computed(() => state.value?.instances ?? 0)
+
+/** 主按钮文案：没有实例时就不该写「重启」 */
+const switchLabel = computed(() => {
+  if (instanceCount.value === 0) return '切换版本'
+  return isDocker.value ? '切换并重建容器' : '切换并重启'
+})
+
+/** 三种目标的说明文案，按有没有实例、是不是容器运行时分开说 */
+const switchHint = computed(() => {
+  if (instanceCount.value === 0) return '还没有托管的实例，切换只替换二进制版本，不会重启任何服务。'
+  if (isDocker.value) return '切换时把二进制挂进容器并覆盖启动入口，镜像 tag 不变。未接管前仍用镜像自带的 frp。'
+  return '「下载」只预置二进制，不影响在跑的服务；「切换」才生效。'
+})
+
 /** 已缓存优先 + 官方列表 + 手填，且把当前 active 版本排到最前面便于识别 */
 const options = computed(() => {
   const list = versions.value?.merged || []
@@ -85,6 +101,16 @@ watch(visible, (v) => {
     emit('closed')
   }
 })
+
+/**
+ * 选定版本后自动把二进制预置好：未缓存的版本直接拉取，
+ * 省掉「先点仅下载、再点切换」这一步。已缓存或就是当前生效版本的不重复下载。
+ */
+async function autoPrefetch(version: string) {
+  const v = (version || '').trim()
+  if (!v || cachedVersions.value.has(v) || v === activeVersion.value) return
+  await run('download')
+}
 
 async function run(action: 'download' | 'activate') {
   const version = finalVersion.value
@@ -137,7 +163,7 @@ async function run(action: 'download' | 'activate') {
         :closable="false"
         show-icon
         title="frps 与 frpc 共用一个版本"
-        description="「下载」只预置二进制，不影响在跑的服务；「切换」才生效。"
+        :description="switchHint"
         style="margin-bottom: 14px"
       />
       <el-alert
@@ -146,7 +172,7 @@ async function run(action: 'download' | 'activate') {
         :closable="false"
         show-icon
         title="Docker：镜像只作运行时底座"
-        description="切换时把二进制挂进容器并覆盖启动入口，镜像 tag 不变。未接管前仍用镜像自带的 frp。"
+        :description="switchHint"
         style="margin-bottom: 14px"
       />
       <el-alert
@@ -155,7 +181,7 @@ async function run(action: 'download' | 'activate') {
         :closable="false"
         show-icon
         title="面板本机 frps 版本"
-        description="对本机全部 frps 实例生效；「下载」只预置，「切换」才重启。"
+        :description="switchHint"
         style="margin-bottom: 14px"
       />
 
@@ -200,6 +226,7 @@ async function run(action: 'download' | 'activate') {
             allow-create
             default-first-option
             style="width: 100%"
+            @change="autoPrefetch"
           >
             <el-option
               v-for="v in options"
@@ -213,9 +240,15 @@ async function run(action: 'download' | 'activate') {
               <el-tag v-if="v === activeVersion" size="small" type="warning" style="margin-left: 6px">当前</el-tag>
             </el-option>
           </el-select>
-          <el-input v-else v-model="customVersion" placeholder="例如 0.62.1（不带 v 前缀）" clearable />
+          <el-input
+            v-else
+            v-model="customVersion"
+            placeholder="例如 0.62.1（不带 v 前缀）"
+            clearable
+            @change="autoPrefetch"
+          />
           <div class="hint">
-            版本列表来自 GitHub 官方接口，取不到可直接手填。
+            版本列表来自 GitHub 官方接口，取不到可直接手填。选定后会自动下载该版本。
           </div>
         </el-form-item>
       </el-form>
@@ -225,7 +258,7 @@ async function run(action: 'download' | 'activate') {
       <el-button @click="visible = false">取消</el-button>
       <el-button :loading="acting === 'download'" @click="run('download')">仅下载</el-button>
       <el-button type="primary" :loading="acting === 'activate'" @click="run('activate')">
-        {{ isDocker ? '切换并重建容器' : '切换并重启' }}
+        {{ switchLabel }}
       </el-button>
     </template>
   </el-dialog>

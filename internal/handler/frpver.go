@@ -107,6 +107,7 @@ func (h *FrpHandler) LocalFrp(c *gin.Context) {
 		"outdated":   latestIsNewer(active, cached),
 		"serial":     "local",
 		"displayName": "面板本机",
+		"instances":  countLocalTargets(),
 	})
 }
 
@@ -219,9 +220,14 @@ func (h *FrpHandler) LocalFrpActivate(c *gin.Context) {
 		return
 	}
 
+	restarted := countTrue(runningBefore)
+	detail := "共重启 " + strconv.Itoa(restarted) + " 个实例"
+	if restarted == 0 {
+		detail = "本机没有实例需要重启"
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"ok":      true,
-		"message": "已切换面板本机 frps 到 " + version + "，共重启 " + strconv.Itoa(countTrue(runningBefore)) + " 个实例",
+		"message": "已切换面板本机 frps 到 " + version + "，" + detail,
 		"active":  h.mgr.ActiveVersion(),
 		"cached":  h.mgr.CachedVersions(),
 	})
@@ -299,6 +305,7 @@ func (h *FrpHandler) AgentFrp(c *gin.Context) {
 		"updatedAt": a.FRPUpdatedAt,
 		"runtime":   runtimeKind,
 		"message":   message,
+		"instances": countAgentTargets(a.ID),
 	})
 }
 
@@ -393,6 +400,23 @@ func (h *FrpHandler) writeAgentResult(c *gin.Context, agentID uint, res dispatch
 }
 
 // ---------- 公共辅助 ----------
+
+// countLocalTargets 面板本机托管的服务端数量（交给 Agent 的不算）
+func countLocalTargets() int {
+	var n int64
+	database.DB.Model(&model.FrpsServer{}).
+		Where("deploy_mode IS NULL OR deploy_mode <> ? OR agent_id = 0", "agent").Count(&n)
+	return int(n)
+}
+
+// countAgentTargets 该 Agent 名下已托管的实例数量（服务端 + 节点）。
+// 为 0 时切换版本只是换二进制，没有任何服务会被重启，界面上也就不该写「重启」。
+func countAgentTargets(agentID uint) int {
+	var servers, nodes int64
+	database.DB.Model(&model.FrpsServer{}).Where("agent_id = ?", agentID).Count(&servers)
+	database.DB.Model(&model.Node{}).Where("agent_id = ?", agentID).Count(&nodes)
+	return int(servers + nodes)
+}
 
 // bindVersion 解析请求体中的 version 字段
 func (h *FrpHandler) bindVersion(c *gin.Context) (string, bool) {

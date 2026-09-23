@@ -368,9 +368,10 @@ func TestBuildFrpsJSONDashboardUnspecified(t *testing.T) {
 	s := testServer()
 	s.DashboardEnabled = nil
 
+	// nil = 历史数据里没设置（老库为 NULL），按「未启用」处理，不写 webServer 段
 	out := decode(t, mustBuild(t, s))
-	if _, ok := out["webServer"]; !ok {
-		t.Error("未指定 DashboardEnabled 时应按默认启用输出 webServer")
+	if ws, ok := out["webServer"]; ok {
+		t.Errorf("未指定 DashboardEnabled 时不该输出 webServer，实际: %v", ws)
 	}
 }
 

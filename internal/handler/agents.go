@@ -3,13 +3,16 @@ package handler
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"dfpanel/internal/agenthub"
 	"dfpanel/internal/database"
+	"dfpanel/internal/distrib"
 	"dfpanel/internal/model"
+	"dfpanel/internal/proto"
 )
 
 // AgentManageHandler Agent 管理面接口（JWT 鉴权）
@@ -49,9 +52,10 @@ func (h *AgentManageHandler) Get(c *gin.Context) {
 }
 
 type createAgentReq struct {
-	Name   string `json:"name"`
-	Remark string `json:"remark"`
-	Roles  string `json:"roles"` // frps / frpc / frps,frpc
+	Name       string `json:"name"`
+	Remark     string `json:"remark"`
+	Roles      string `json:"roles"`      // frps / frpc / frps,frpc
+	FrpVersion string `json:"frpVersion"` // 选填：创建后先把该版本的 frp 二进制预置到目标机器，不切换、不重启
 }
 
 // Create POST /api/agents 创建 Agent 并生成安装令牌
@@ -66,10 +70,26 @@ func (h *AgentManageHandler) Create(c *gin.Context) {
 		req.Name = "Agent-" + time.Now().Format("20060102-150405")
 	}
 
+	// 版本号在面板侧解析好再下发，避免各 Agent 自己解释 latest 造成版本漂移
+	version := strings.TrimSpace(req.FrpVersion)
+	if version == distrib.LatestTag {
+		resolved, err := distrib.LatestVersion()
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "解析最新 frp 版本失败：" + err.Error()})
+			return
+		}
+		version = resolved
+	}
+	if version != "" && !distrib.ValidVersion(version) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "frp 版本号不合法：" + req.FrpVersion})
+		return
+	}
+
 	a := model.Agent{
-		Name:   req.Name,
-		Remark: req.Remark,
-		Roles:  req.Roles,
+		Name:       req.Name,
+		Remark:     req.Remark,
+		Roles:      req.Roles,
+		FRPVersion: version,
 		// NodeKey / Secret 只在创建与安装命令中返回，后续不再展示 Secret
 		NodeKey: randomToken(16),
 		Secret:  randomToken(32),
@@ -78,6 +98,18 @@ func (h *AgentManageHandler) Create(c *gin.Context) {
 	if err := database.DB.Create(&a).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建失败：" + err.Error()})
 		return
+	}
+
+	// 新建时只让 Agent 预置二进制：不发切换指令，不重启任何服务。
+	// 此刻 Agent 一般还没安装上线，指令会排在队列里，等它上线后自动补发执行。
+	if version != "" {
+		_, _ = dispatch(h.hub, &model.AgentCommand{
+			AgentID:    a.ID,
+			Type:       proto.CmdFrpDownload,
+			TargetType: proto.TargetAgent,
+			Payload:    `{"version":"` + version + `"}`,
+			TimeoutMs:  int((30 * time.Second).Milliseconds()),
+		})
 	}
 	c.JSON(http.StatusOK, a)
 }

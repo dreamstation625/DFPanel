@@ -27,6 +27,9 @@ const previewText = ref('')
 const previewVisible = ref(false)
 const logText = ref('')
 const logVisible = ref(false)
+const logLoading = ref(false)
+/** 正在执行的进程操作：start / stop / restart，用于按钮 loading */
+const acting = ref('')
 const activeTab = ref('basic')
 
 // 历史版本（每次下发都会在 Agent 侧生成快照，可在此按版本回滚）
@@ -154,25 +157,88 @@ async function preview() {
   previewVisible.value = true
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * 操作后重新读状态：Agent 上报有延迟，多试几次，避免刚启动就被判成「没起来」。
+ * 返回最终读到的状态。
+ */
+async function refreshStatus(id: number, expect: string) {
+  let status: string | undefined
+  for (let i = 0; i < 3; i += 1) {
+    await load()
+    status = list.value.find((s) => s.id === id)?.status
+    if (status === expect || status === 'agent_offline') return status
+    if (i < 2) await sleep(1500)
+  }
+  return status
+}
+
+/**
+ * 启停重启：无论如何都刷新一次状态；失败（含启动后进程没起来）会提示并直接把日志打开。
+ */
 async function doAction(action: 'start' | 'stop' | 'restart') {
-  if (!form.value.id) {
+  const id = form.value.id
+  if (!id) {
     ElMessage.warning('请先保存配置')
     return
   }
-  const res = await serverApi[action](form.value.id)
-  if (res.ok === false) {
-    ElMessage.error(res.message)
-  } else {
-    ElMessage.success(res.message ?? '操作完成')
+
+  acting.value = action
+  let failure = ''
+  let notified = false // 请求拦截器已经弹过错误提示，避免重复弹
+  try {
+    const res = await serverApi[action](id)
+    if (res.queued) {
+      ElMessage.warning(res.message || 'Agent 离线，指令已排队，上线后自动执行')
+      await load()
+      return
+    }
+    if (res.ok === false) {
+      failure = res.message || '操作失败'
+    } else {
+      ElMessage.success(res.message ?? '操作完成')
+    }
+  } catch (e: any) {
+    failure = e?.response?.data?.error || e?.message || '操作失败'
+    notified = true
+  } finally {
+    acting.value = ''
   }
-  await load()
+
+  const expect = action === 'stop' ? 'stopped' : 'running'
+  if (!failure) {
+    const status = await refreshStatus(id, expect)
+    if (status && status !== expect) {
+      failure = `${action === 'stop' ? '停止' : '启动'}后状态是「${statusText(status)}」，进程可能没跑起来`
+    }
+  } else {
+    await load()
+  }
+
+  if (failure) {
+    if (!notified) ElMessage.error(failure)
+    await openLog(id)
+  }
 }
 
-async function viewLog() {
-  if (!form.value.id) return
-  const res = await serverApi.log(form.value.id)
-  logText.value = res.content || '（暂无日志，请先启动 frps）'
+/** 打开日志弹窗；进程操作失败时会被自动调用，直接看原因 */
+async function openLog(id = form.value.id) {
+  if (!id) return
+  logText.value = ''
+  logLoading.value = true
   logVisible.value = true
+  try {
+    const res = await serverApi.log(id)
+    logText.value = res.content || '（暂无日志，请先启动 frps）'
+    if (res.message) ElMessage.warning(res.message)
+  } catch (e: any) {
+    logText.value = '读取日志失败：' + (e?.response?.data?.error || e?.message || '未知错误')
+  } finally {
+    logLoading.value = false
+  }
 }
 
 async function openVersions() {
@@ -303,7 +369,7 @@ onMounted(load)
         </el-tooltip>
         <el-button type="primary" plain @click="createNew">新建服务端</el-button>
         <el-button :disabled="isNew" @click="preview">预览 frps.json</el-button>
-        <el-button :disabled="isNew" @click="viewLog">日志</el-button>
+        <el-button :disabled="isNew" @click="openLog()">日志</el-button>
         <el-button :disabled="isNew" @click="openVersions">历史版本</el-button>
         <el-button :loading="saving" @click="save">保存</el-button>
         <el-button type="primary" @click="apply">保存并应用</el-button>
@@ -864,9 +930,30 @@ onMounted(load)
       </el-form>
 
       <el-divider content-position="left">进程操作</el-divider>
-      <el-button type="success" :disabled="isNew" @click="doAction('start')">启动 frps</el-button>
-      <el-button type="warning" :disabled="isNew" @click="doAction('restart')">重启</el-button>
-      <el-button type="danger" :disabled="isNew" @click="doAction('stop')">停止</el-button>
+      <el-button
+        type="success"
+        :disabled="isNew"
+        :loading="acting === 'start'"
+        @click="doAction('start')"
+      >
+        启动 frps
+      </el-button>
+      <el-button
+        type="warning"
+        :disabled="isNew"
+        :loading="acting === 'restart'"
+        @click="doAction('restart')"
+      >
+        重启
+      </el-button>
+      <el-button
+        type="danger"
+        :disabled="isNew"
+        :loading="acting === 'stop'"
+        @click="doAction('stop')"
+      >
+        停止
+      </el-button>
       <span v-if="isNew" class="hint">请先保存配置后再操作进程</span>
       <span v-else-if="form.deployMode === 'agent'" class="hint">将通过托管 Agent 在远端执行</span>
     </el-card>
@@ -876,7 +963,7 @@ onMounted(load)
     </el-dialog>
 
     <el-dialog v-model="logVisible" title="frps 日志" width="760px">
-      <pre class="code-block">{{ logText }}</pre>
+      <pre v-loading="logLoading" class="code-block">{{ logText || '（暂无日志）' }}</pre>
     </el-dialog>
 
     <el-dialog v-model="versionVisible" title="历史版本（可回滚）" width="920px">

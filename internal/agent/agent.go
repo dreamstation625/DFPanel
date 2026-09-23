@@ -163,6 +163,9 @@ func (a *Agent) handleCommand(cmd proto.CommandData) proto.ResultData {
 		if err := ctrl.Start(); err != nil {
 			return proto.ResultData{Message: "启动失败：" + err.Error()}
 		}
+		if reason := a.confirmRunning(t); reason != "" {
+			return proto.ResultData{Message: reason, Running: false}
+		}
 		return proto.ResultData{OK: true, Message: "已启动", Running: true}
 	case proto.CmdStop:
 		ctrl := a.controller(t)
@@ -174,6 +177,9 @@ func (a *Agent) handleCommand(cmd proto.CommandData) proto.ResultData {
 		ctrl := a.controller(t)
 		if err := ctrl.Restart(); err != nil {
 			return proto.ResultData{Message: "重启失败：" + err.Error()}
+		}
+		if reason := a.confirmRunning(t); reason != "" {
+			return proto.ResultData{Message: reason, Running: false}
 		}
 		return proto.ResultData{OK: true, Message: "已重启", Running: true}
 	case proto.CmdLog:

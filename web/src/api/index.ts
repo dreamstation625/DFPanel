@@ -219,7 +219,10 @@ export const serverApi = {
   start: (id: number) => request.post<unknown, ApplyResult>(`/servers/${id}/start`, null, { timeout: APPLY_TIMEOUT }),
   stop: (id: number) => request.post<unknown, ApplyResult>(`/servers/${id}/stop`, null, { timeout: APPLY_TIMEOUT }),
   restart: (id: number) => request.post<unknown, ApplyResult>(`/servers/${id}/restart`, null, { timeout: APPLY_TIMEOUT }),
-  log: (id: number) => request.get<unknown, { content: string; running?: boolean }>(`/servers/${id}/log`),
+  log: (id: number) =>
+    request.get<unknown, { content: string; running?: boolean; message?: string; queued?: boolean }>(
+      `/servers/${id}/log`,
+    ),
   versions: (id: number) => request.get<unknown, VersionsResult>(`/servers/${id}/versions`),
   rollback: (id: number, version: number) =>
     request.post<unknown, ApplyResult>(`/servers/${id}/rollback`, { version }, { timeout: APPLY_TIMEOUT }),
@@ -444,7 +447,7 @@ export interface VersionsResult {
 
 export const agentApi = {
   list: () => request.get<unknown, AgentInfo[]>('/agents'),
-  create: (data: { name: string; remark?: string; roles: string }) =>
+  create: (data: { name: string; remark?: string; roles: string; frpVersion?: string }) =>
     request.post<unknown, AgentInfo>('/agents', data),
   update: (id: number, data: Partial<AgentInfo>) => request.post<unknown, AgentInfo>(`/agents/${id}/update`, data),
   remove: (id: number) => request.post(`/agents/${id}/delete`),
@@ -539,6 +542,8 @@ export interface FrpVersionState {
   updatedAt?: string | null
   /** Agent 运行时可，process / docker */
   runtime?: string
+  /** 该目标下已托管的实例数，0 表示切换时没有任何服务会被重启 */
+  instances?: number
   /** 附加说明（例如 docker 平台探测失败的原因） */
   message?: string
 }

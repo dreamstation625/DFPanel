@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   agentApi,
+  settingApi,
   statusLabel,
   statusType,
   type AgentInfo,
@@ -49,7 +50,22 @@ function compareSemver(x: string, y: string) {
 }
 
 const createVisible = ref(false)
-const createForm = reactive({ name: '', remark: '', roles: ['frpc'] as string[] })
+const createForm = reactive({ name: '', remark: '', roles: ['frpc'] as string[], frpVersion: '' })
+
+// 新建时可以先挑好 frp 版本：创建后只预置二进制，等 Agent 上线自动下载，不切换也不重启
+const frpVersionOptions = ref<string[]>([])
+const frpVersionLatest = ref('')
+
+async function loadFrpVersions() {
+  try {
+    const v = await settingApi.frpVersions()
+    frpVersionOptions.value = v.merged || []
+    frpVersionLatest.value = v.latest || ''
+  } catch {
+    frpVersionOptions.value = []
+    frpVersionLatest.value = ''
+  }
+}
 const creating = ref(false)
 
 const editVisible = ref(false)
@@ -96,7 +112,9 @@ function openCreate() {
   createForm.name = ''
   createForm.remark = ''
   createForm.roles = ['frpc']
+  createForm.frpVersion = ''
   createVisible.value = true
+  loadFrpVersions()
 }
 
 async function submitCreate() {
@@ -106,13 +124,19 @@ async function submitCreate() {
   }
   creating.value = true
   try {
+    const pickedVersion = createForm.frpVersion
     const created = await agentApi.create({
       name: createForm.name || `Agent-${agents.value.length + 1}`,
       remark: createForm.remark,
       roles: createForm.roles.join(','),
+      frpVersion: pickedVersion || undefined,
     })
     createVisible.value = false
-    ElMessage.success('Agent 已创建，请复制安装命令到目标服务器执行')
+    ElMessage.success(
+      pickedVersion
+        ? `Agent 已创建，上线后会自动下载 frp ${pickedVersion}（只预置，不切换不重启）`
+        : 'Agent 已创建，请复制安装命令到目标服务器执行',
+    )
     await load()
     openInstall(created)
   } finally {
@@ -292,6 +316,27 @@ onMounted(load)
             <el-checkbox value="frps">frps（服务端）</el-checkbox>
             <el-checkbox value="frpc">frpc（客户端）</el-checkbox>
           </el-checkbox-group>
+        </el-form-item>
+        <el-form-item label="frp 版本">
+          <el-select
+            v-model="createForm.frpVersion"
+            filterable
+            allow-create
+            clearable
+            default-first-option
+            placeholder="选填，建议现在就选好"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="v in frpVersionOptions"
+              :key="v"
+              :value="v"
+              :label="v === frpVersionLatest ? `${v}（最新）` : v"
+            />
+          </el-select>
+          <div class="hint-line">
+            创建后只把二进制预置到机器上并记为期望版本，不切换、不重启；Agent 上线后自动下载。
+          </div>
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="createForm.remark" placeholder="选填" />
