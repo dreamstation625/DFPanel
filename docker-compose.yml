@@ -26,6 +26,6 @@ services:
     environment:
       DFPANEL_LISTEN: ":7226"
       DFPANEL_DATA_DIR: "/data"
-      # 面板对外地址：用于生成 Agent 安装命令与 frpc 的 serverAddr，务必改成实际可访问地址
+      # 面板对外地址：生成 Agent 安装命令用；节点没填 serverAddr 时拿它兜底（会去掉 http:// 和端口）
       DFPANEL_PUBLIC_URL: "http://192.168.1.10:7226"
       TZ: "Asia/Shanghai"

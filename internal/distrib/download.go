@@ -164,17 +164,32 @@ func EnsureFRPBinary(kind, version, goos, goarch, dir, base string) (string, err
 		_ = os.Remove(tmp.Name())
 	}()
 
-	client := &http.Client{Timeout: 5 * time.Minute}
-	resp, err := client.Get(url)
-	if err != nil {
-		return "", fmt.Errorf("下载 %s 失败：%w", url, err)
+	// 下载专用 client：不给「整个请求」设短超时 —— 包有十几 MB，镜像站慢的时候
+	// 5 分钟总超时会在一半处直接掐断（context deadline exceeded while reading body）；
+	// 只限制等响应头的时间，连不上就快速失败。
+	client := &http.Client{
+		Timeout: 30 * time.Minute,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Second,
+			IdleConnTimeout:       30 * time.Second,
+		},
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("下载 %s 失败：HTTP %d（%s）", asset, resp.StatusCode, url)
+
+	// 慢下载、镜像站限速都常见，失败就重来几次（每次都是新请求，不做断点续传）
+	const attempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(time.Duration(attempt-1) * 2 * time.Second)
+		}
+		if lastErr = downloadToFile(client, url, tmp); lastErr == nil {
+			break
+		}
 	}
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
-		return "", err
+	if lastErr != nil {
+		return "", fmt.Errorf("下载 %s 失败（已重试 %d 次）：%w", asset, attempts, lastErr)
 	}
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
 		return "", err
@@ -198,6 +213,28 @@ func EnsureFRPBinary(kind, version, goos, goarch, dir, base string) (string, err
 		return "", fmt.Errorf("下载的二进制版本与期望不一致：期望 %s，实际 %s", ver, got)
 	}
 	return dest, nil
+}
+
+// downloadToFile 把 url 下载到 f（每次从头写）；网络中断或超时都返回错误，交给调用方重试
+func downloadToFile(client *http.Client, url string, f *os.File) error {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ActivateBinary 把某个版本切为 active 槽位，返回切换前的 active 版本（空表示原先无 active 二进制）。
@@ -337,11 +374,24 @@ var (
 	versionListAt  time.Time
 )
 
+// FallbackVersions 官方列表拿不到时的兜底版本（新到旧，都实测是可下载的 release）。
+//
+// frp 发版不快，这份列表旧一点没关系：用户随时可以手填更新的版本号。
+var FallbackVersions = []string{
+	"0.71.0", "0.70.0", "0.69.0", "0.68.0", "0.67.0", "0.66.0",
+	"0.65.0", "0.64.0", "0.63.0", "0.62.1", "0.61.1", "0.60.0",
+}
+
 // ListVersions 取 frp 官方 release 版本列表（降序）。
 // 命中 10 分钟内存缓存；失败时返回错误，由调用方降级为手填版本。
-func ListVersions() ([]string, error) {
+func ListVersions() ([]string, error) { return listVersions(false) }
+
+// ListVersionsFresh 忽略缓存重新拉取，界面上点「重新获取」时用
+func ListVersionsFresh() ([]string, error) { return listVersions(true) }
+
+func listVersions(force bool) ([]string, error) {
 	versionListMu.Lock()
-	if len(versionListVal) > 0 && time.Since(versionListAt) < versionListCacheTTL {
+	if !force && len(versionListVal) > 0 && time.Since(versionListAt) < versionListCacheTTL {
 		cached := append([]string(nil), versionListVal...)
 		versionListMu.Unlock()
 		return cached, nil

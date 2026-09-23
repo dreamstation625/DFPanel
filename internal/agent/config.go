@@ -139,6 +139,15 @@ func (c *Config) LogPath(t Target) string {
 	return filepath.Join(c.DataDir, fmt.Sprintf("%s-%d.log", kind, t.ID))
 }
 
+// PidPath 子进程 pid 文件路径：Agent 重启后据此接管仍在运行的实例
+func (c *Config) PidPath(t Target) string {
+	kind := "frpc"
+	if t.Type == "server" {
+		kind = "frps"
+	}
+	return filepath.Join(c.DataDir, fmt.Sprintf("%s-%d.pid", kind, t.ID))
+}
+
 // BinaryPath frp 二进制路径：优先使用数据目录中的副本，其次回退到 PATH（容器镜像内置 / 系统安装）
 //
 // 这是 active 槽位，路径字面固定。版本切换只替换该路径指向的内容，

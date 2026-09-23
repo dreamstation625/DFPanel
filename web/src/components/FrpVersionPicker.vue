@@ -33,6 +33,8 @@ const acting = ref('')
 const versions = ref<FrpVersionsResult | null>(null)
 const state = ref<FrpVersionState | null>(null)
 const selected = ref('')
+/** 版本列表相关的说明（例如官方列表拉不到，用了内置兜底） */
+const listMessage = ref('')
 const customVersion = ref('')
 const useCustom = ref(false)
 
@@ -72,19 +74,21 @@ const options = computed(() => {
 
 const finalVersion = computed(() => (useCustom.value ? customVersion.value.trim() : selected.value))
 
-async function load() {
+async function load(refresh = false) {
   loading.value = true
   try {
+    const keep = selected.value
     const [v, s] = await Promise.all([
-      settingApi.frpVersions(),
+      settingApi.frpVersions(refresh),
       props.target === 'agent' && props.targetId
         ? frpVersionApi.agent(props.targetId)
         : frpVersionApi.local(),
     ])
     versions.value = v
     state.value = s
-    selected.value = s.expected || s.active || v.latest || v.merged[0] || ''
-    if (v.message) ElMessage.warning(v.message)
+    // 点「重新获取」时保留用户已经选好的版本，别把它冲掉
+    selected.value = keep || s.expected || s.active || v.latest || v.merged[0] || ''
+    listMessage.value = v.message || ''
   } catch (e: any) {
     ElMessage.error(e?.message || '读取 frp 版本信息失败')
   } finally {
@@ -186,6 +190,15 @@ async function run(action: 'download' | 'activate') {
       />
 
       <el-alert
+        v-if="listMessage"
+        type="warning"
+        :closable="false"
+        show-icon
+        :title="listMessage"
+        style="margin-bottom: 14px"
+      />
+
+      <el-alert
         v-if="state?.message"
         type="warning"
         :closable="false"
@@ -250,6 +263,9 @@ async function run(action: 'download' | 'activate') {
           <div class="hint">
             版本列表来自 GitHub 官方接口，取不到可直接手填。选定后会自动下载该版本。
           </div>
+          <div class="list-actions">
+            <el-button size="small" :loading="loading" @click="load(true)">重新获取版本列表</el-button>
+          </div>
         </el-form-item>
       </el-form>
     </div>
@@ -265,6 +281,10 @@ async function run(action: 'download' | 'activate') {
 </template>
 
 <style scoped>
+.list-actions {
+  margin-top: 8px;
+}
+
 .hint {
   margin-top: 6px;
   font-size: 12px;

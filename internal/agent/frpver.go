@@ -66,6 +66,16 @@ func (a *Agent) slotVersion(kind string) string {
 	return a.cfg.BinaryVersion(kind)
 }
 
+// sameAsCurrent 所有启用角色的 active 槽位都已经是目标版本时返回 true
+func (a *Agent) sameAsCurrent(kinds []string, version string) bool {
+	for _, kind := range kinds {
+		if a.slotVersion(kind) != version {
+			return false
+		}
+	}
+	return true
+}
+
 // slotCached 该平台在本地已缓存的版本
 func (a *Agent) slotCached(kind string) []string {
 	goos, goarch, err := a.frpPlatform()
@@ -258,6 +268,17 @@ func (a *Agent) handleFrpActivate(cmd proto.CommandData) proto.ResultData {
 		}
 		concrete = ver
 		_ = dest
+	}
+
+	// 版本没变化就别动：切换要停实例、换槽位再拉起，docker 运行时还要重建容器，白折腾一遍
+	if a.sameAsCurrent(kinds, concrete) {
+		active, cached := a.frpStatus()
+		return proto.ResultData{
+			OK:         true,
+			Message:    fmt.Sprintf("当前已经是 frp %s，没有变化", concrete),
+			FrpVersion: active,
+			FrpCached:  cached,
+		}
 	}
 
 	oldVersions := map[string]string{}

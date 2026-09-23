@@ -19,6 +19,8 @@ type Spec struct {
 	Image         string
 	ConfigPath    string
 	LogPath       string
+	// PidPath 子进程 pid 文件：Agent 重启后据此接管仍在运行的实例（docker 运行时不用）
+	PidPath       string
 	ContainerName string
 	// MountBinary docker 运行时专用：宿主机上的 frp 二进制，挂进容器并覆盖 entrypoint。
 	// 为空表示不介入，容器沿用镜像自带的 frp（存量部署保持原行为）。
@@ -36,6 +38,8 @@ type Controller struct {
 	// gen 进程代次：只用于区分「当前这一代进程」的退出事件，
 	// 避免旧进程的 Wait 返回后把刚启动的新进程误标为已退出
 	gen int
+	// adoptedPid 接管的实例 pid（上个 Agent 进程留下的），>0 时 Running / Stop 都走它
+	adoptedPid int
 }
 
 // NewController 创建控制器
@@ -83,16 +87,26 @@ func (c *Controller) startProcess() error {
 	c.cmd = cmd
 	c.logFile = f
 	c.exited = false
+	c.adoptedPid = 0
+	// 记下 pid：Agent 重启后靠它认出并接管这个实例（写失败不影响本次运行）
+	_ = writePidFile(c.spec.PidPath, cmd.Process.Pid)
 
 	go func() {
 		_ = cmd.Wait()
+		mine := false
 		c.mu.Lock()
 		// 仅当前代进程退出才更新状态，旧进程退出不影响新实例
 		if c.gen == gen {
 			c.exited = true
 			c.logFile = nil
+			c.adoptedPid = 0
+			mine = true
 		}
 		c.mu.Unlock()
+		// 只有自己这一代退出时才清 pid 文件，免得抹掉新进程刚写进去的
+		if mine {
+			removePidFile(c.spec.PidPath)
+		}
 		_ = f.Close()
 	}()
 	return nil
@@ -144,6 +158,32 @@ func dockerRunArgs(spec Spec, image string, hostNetwork bool) []string {
 	return append(args, image, "-c", spec.ConfigPath)
 }
 
+// Adopt 尝试接管上一个 Agent 进程留下的实例。
+//
+// Agent 退出时刻意不杀自己拉起的 frp（这样重启时隧道不会中断），所以重启后先看 pid 文件：
+// 进程还在、且确实是本实例（配置路径 / 映像路径对得上）就直接接管，不再重复启动 ——
+// 否则旧进程占着端口，新进程起来必然失败。
+func (c *Controller) Adopt() bool {
+	if c.spec.Runtime == "docker" || c.spec.PidPath == "" {
+		return false
+	}
+	pid := readPidFile(c.spec.PidPath)
+	if pid <= 0 {
+		return false
+	}
+	if !processAlive(pid) || !processMatchesBinary(pid, c.spec.BinPath, c.spec.ConfigPath) {
+		// pid 文件过期（进程已退出，或 pid 被复用）：清掉，走正常启动
+		removePidFile(c.spec.PidPath)
+		return false
+	}
+
+	c.mu.Lock()
+	c.adoptedPid = pid
+	c.exited = false
+	c.mu.Unlock()
+	return true
+}
+
 // Stop 停止并清理
 func (c *Controller) Stop() error {
 	if c.spec.Runtime == "docker" {
@@ -154,11 +194,30 @@ func (c *Controller) Stop() error {
 		return nil
 	}
 
+	// 接管的实例没有 cmd 句柄，只能按 pid 杀
 	c.mu.Lock()
+	if c.adoptedPid > 0 {
+		pid := c.adoptedPid
+		c.adoptedPid = 0
+		c.mu.Unlock()
+		_ = killProcess(pid)
+		// 等它真的退出：端口与文件占用要靠它释放
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if !processAlive(pid) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		removePidFile(c.spec.PidPath)
+		return nil
+	}
+
 	cmd := c.cmd
 	if cmd == nil || cmd.Process == nil {
 		c.cmd = nil
 		c.mu.Unlock()
+		removePidFile(c.spec.PidPath)
 		return nil
 	}
 	gen := c.gen
@@ -177,10 +236,11 @@ func (c *Controller) Stop() error {
 		done := c.exited && c.gen == gen
 		c.mu.Unlock()
 		if done {
-			return nil
+			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	removePidFile(c.spec.PidPath)
 	return nil
 }
 
@@ -196,6 +256,9 @@ func (c *Controller) Running() bool {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.adoptedPid > 0 {
+		return processAlive(c.adoptedPid)
+	}
 	return c.cmd != nil && c.cmd.Process != nil && !c.exited
 }
 

@@ -569,13 +569,15 @@ export interface FrpVersionResult {
   expect?: string
 }
 
-// 版本切换要下载 + 重启 + 逐个健康探测，失败还会回滚，超时给足
-const FRP_VERSION_TIMEOUT = 420000
+// 下载要等面板从上游抓包（慢的时候十几分钟），切换还要重启 + 逐个健康探测，超时给足
+const FRP_VERSION_TIMEOUT = 2100000
 
 export const settingApi = {
   get: () => request.get<unknown, SettingsValues>('/settings'),
   save: (data: Partial<SettingsValues>) => request.post<unknown, SettingsValues>('/settings', data),
-  frpVersions: () => request.get<unknown, FrpVersionsResult>('/frp-versions'),
+  /** refresh=true 时忽略面板侧缓存重新拉取 */
+  frpVersions: (refresh = false) =>
+    request.get<unknown, FrpVersionsResult>('/frp-versions', refresh ? { params: { refresh: 1 } } : {}),
 }
 
 export const frpVersionApi = {

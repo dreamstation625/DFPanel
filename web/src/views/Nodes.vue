@@ -784,6 +784,7 @@ onMounted(load)
             <FieldHelp :doc="DOC.clientCommon" text="留空取关联 frps 的公网地址" />
           </template>
           <el-input v-model="form.serverAddr" placeholder="留空自动取 frps 公网地址 / 面板地址" />
+          <span class="hint">只填主机名或 IP，不要带 http://</span>
         </el-form-item>
         <el-form-item>
           <template #label>

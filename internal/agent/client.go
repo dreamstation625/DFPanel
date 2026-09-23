@@ -25,6 +25,12 @@ type Client struct {
 	http *http.Client
 }
 
+// downloadHTTP 下载 frp 二进制专用。
+//
+// 通用 client 的 30 秒超时只适合心跳这类小请求：下载走的是「面板先把包抓下来再转发」的链路，
+// 上游慢的时候面板要等几分钟才开始吐数据，30 秒会在读一半时直接断（context deadline exceeded）。
+var downloadHTTP = &http.Client{Timeout: 30 * time.Minute}
+
 // NewClient 创建面板客户端
 func NewClient(cfg *Config) *Client {
 	return &Client{cfg: cfg, http: &http.Client{Timeout: 30 * time.Second}}
@@ -120,7 +126,7 @@ func (c *Client) DownloadBinary(kind, version, goos, goarch string) (string, str
 
 	src := fmt.Sprintf("/downloads/%s/%s/%s/%s", kind, version, goos, goarch)
 
-	resp, err := c.http.Get(c.api(src))
+	resp, err := downloadHTTP.Get(c.api(src))
 	if err != nil {
 		return "", "", err
 	}

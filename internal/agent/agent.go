@@ -286,14 +286,21 @@ func (a *Agent) bootstrap() {
 		}
 
 		t := Target{Type: typ, ID: uint(id)}
+		ctrl := a.controller(t)
+		if ctrl.Running() {
+			continue
+		}
+		// 上个 Agent 进程留下的实例还在跑：接管它，别再起一个（会撞端口）。
+		// 接管只是认领已在运行的进程，与「是否自动启动」无关 ——
+		// 没开自动启动也不该放任它跑着却不受管。
+		if ctrl.Adopt() {
+			log.Printf("已接管仍在运行的实例 %s-%d", kind, id)
+			continue
+		}
 		// 有记录就按记录来：没开自动启动、或被手动停过的不拉起来；
 		// 没记录的是旧版本留下的实例，维持原来的自愈行为。
 		if st, tracked := a.trackedState(targetKey(t)); tracked && (!st.AutoStart || st.ManualStopped) {
 			log.Printf("跳过 %s-%d（未开启自动启动或已被手动停止）", kind, id)
-			continue
-		}
-		ctrl := a.controller(t)
-		if ctrl.Running() {
 			continue
 		}
 		if err := ctrl.Start(); err != nil {
@@ -321,6 +328,7 @@ func (a *Agent) controller(t Target) *Controller {
 		BinPath:       a.cfg.BinaryPath(kind),
 		ConfigPath:    a.cfg.ConfigPath(t),
 		LogPath:       a.cfg.LogPath(t),
+		PidPath:       a.cfg.PidPath(t),
 		ContainerName: ContainerName(kind, t.ID),
 	}
 	if a.cfg.Runtime == "docker" {

@@ -11,13 +11,13 @@ import (
 // BuildFrpcFromNode 依据节点、其关联的 frps 与隧道列表生成 frpc.json
 // fallbackAddr 为面板对外地址，在节点与服务端都未指定地址时兜底
 func BuildFrpcFromNode(node *model.Node, server *model.FrpsServer, proxies []model.Proxy, visitors []model.Visitor, fallbackAddr string) (string, error) {
-	serverAddr := node.ServerAddr
+	serverAddr := cleanServerAddr(node.ServerAddr)
 	serverPort := node.ServerPort
 	token := node.AuthToken
 
 	if server != nil {
 		if serverAddr == "" {
-			serverAddr = server.PublicAddr
+			serverAddr = cleanServerAddr(server.PublicAddr)
 		}
 		if serverPort == 0 {
 			serverPort = server.BindPort
@@ -27,7 +27,7 @@ func BuildFrpcFromNode(node *model.Node, server *model.FrpsServer, proxies []mod
 		}
 	}
 	if serverAddr == "" {
-		serverAddr = fallbackAddr
+		serverAddr = cleanServerAddr(fallbackAddr)
 	}
 	if serverPort == 0 {
 		serverPort = 7000
@@ -53,6 +53,40 @@ func BuildFrpcFromNode(node *model.Node, server *model.FrpsServer, proxies []mod
 	cfg.Proxies = buildProxies(proxies)
 	cfg.Visitors = buildVisitors(visitors)
 	return BuildFrpcJSON(cfg)
+}
+
+// cleanServerAddr 把地址整理成 frp 要的形式：只留主机名或 IP。
+//
+// 面板对外地址、服务端公网地址都可能是 http://host:port 这种带协议、带面板端口的写法，
+// 直接塞进 serverAddr 会让 frpc 解析失败；端口也不写在这里，frp 用 serverPort 单独指定。
+func cleanServerAddr(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	// 只有「单个冒号 + 后面全是数字」才当端口切掉，避免动到 IPv6 字面量
+	if host, port, ok := strings.Cut(s, ":"); ok && isDigits(port) {
+		s = host
+	}
+	return strings.TrimSpace(s)
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // buildClientAuth 客户端鉴权：token 与 tokenSource 互斥；oidc 走单独分支

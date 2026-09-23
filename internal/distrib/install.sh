@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # DFPanel Agent 一键安装脚本（Linux / macOS）
 # 用法：
-#   curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- \
-#     --panel http://<panel>:7226 --node-key <KEY> --secret <SECRET> --roles frps,frpc
+#   安装：
+#     curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- \
+#       --panel http://<panel>:7226 --node-key <KEY> --secret <SECRET> --roles frps,frpc
+#   卸载：
+#     curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- --uninstall [--purge]
 set -euo pipefail
 
 PANEL=""
@@ -13,11 +16,71 @@ RUNTIME="process"
 INSTALL_DIR="/usr/local/bin"
 CONF_DIR="/etc/dfpanel-agent"
 DATA_DIR="/var/lib/dfpanel-agent"
+UNINSTALL=0
+PURGE=0
 
 usage() {
   cat <<'EOF'
-用法: install.sh --panel <面板地址> --node-key <安装令牌> --secret <密钥> [--roles frps,frpc] [--runtime process|docker]
+用法:
+  安装: install.sh --panel <面板地址> --node-key <安装令牌> --secret <密钥> [--roles frps,frpc] [--runtime process|docker]
+  卸载: install.sh --uninstall [--purge]
+    --uninstall  停止托管的 frp 实例、注销服务、删除配置与二进制；默认保留数据目录
+    --purge      卸载时连数据目录一起删（frp 二进制缓存等）
 EOF
+}
+
+# 卸载：Agent 退出不会带走自己拉起的 frp，所以这里要显式收拾干净。
+# 顺序是先停服务（避免它又把实例拉起来），再按 pid 文件停实例，最后删文件。
+do_uninstall() {
+  echo "==> 停止并注销服务"
+
+  if [[ "$OS" == "linux" ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now dfpanel-agent >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/dfpanel-agent.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  elif [[ "$OS" == "darwin" ]]; then
+    PLIST="$HOME/Library/LaunchAgents/com.dfpanel.agent.plist"
+    launchctl unload -w "$PLIST" >/dev/null 2>&1 || true
+    rm -f "$PLIST"
+  else
+    # 无 systemd 时脚本是 nohup 拉起来的，按命令行匹配收拾
+    pkill -f "$INSTALL_DIR/dfpanel-agent" >/dev/null 2>&1 || true
+  fi
+
+  echo "==> 停止托管的 frp 实例"
+  local pidfile pid cmdline
+  for pidfile in "$DATA_DIR"/*.pid; do
+    [ -f "$pidfile" ] || continue
+    pid="$(tr -d ' \n\r' < "$pidfile" 2>/dev/null || true)"
+    rm -f "$pidfile"
+    [ -n "$pid" ] || continue
+    # 先确认这个 pid 确实还是 frp，避免 pid 被复用后误杀别的进程
+    cmdline="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    case "$cmdline" in
+      *frps* | *frpc*) kill "$pid" 2>/dev/null || true ;;
+    esac
+  done
+
+  if command -v docker >/dev/null 2>&1; then
+    ids="$(docker ps -aq --filter 'name=dfpanel-frps-' --filter 'name=dfpanel-frpc-' 2>/dev/null || true)"
+    if [[ -n "$ids" ]]; then
+      # shellcheck disable=SC2086
+      docker rm -f $ids >/dev/null 2>&1 || true
+    fi
+  fi
+
+  echo "==> 删除配置与二进制"
+  rm -f "$INSTALL_DIR/dfpanel-agent" "$CONF_DIR/agent.json"
+  rmdir "$CONF_DIR" >/dev/null 2>&1 || true
+
+  if [[ "$PURGE" -eq 1 ]]; then
+    rm -rf "$DATA_DIR"
+    echo "==> 数据目录已删除：$DATA_DIR"
+  else
+    echo "==> 数据目录保留：$DATA_DIR（要一起删就加 --purge）"
+  fi
+
+  echo "==> 卸载完成（记得在面板「Agent 管理」里把这条记录删掉）"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -27,15 +90,19 @@ while [[ $# -gt 0 ]]; do
     --secret)     NODE_SECRET="$2"; shift 2 ;;
     --roles)      ROLES="$2"; shift 2 ;;
     --runtime)    RUNTIME="$2"; shift 2 ;;
+    --uninstall)  UNINSTALL=1; shift ;;
+    --purge)      PURGE=1; shift ;;
     -h | --help)  usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage; exit 1 ;;
   esac
 done
 
-if [[ -z "$PANEL" || -z "$NODE_KEY" || -z "$NODE_SECRET" ]]; then
-  echo "--panel / --node-key / --secret 均为必填" >&2
-  usage
-  exit 1
+if [[ "$UNINSTALL" -eq 0 ]]; then
+  if [[ -z "$PANEL" || -z "$NODE_KEY" || -z "$NODE_SECRET" ]]; then
+    echo "--panel / --node-key / --secret 均为必填" >&2
+    usage
+    exit 1
+  fi
 fi
 PANEL="${PANEL%/}"
 
@@ -57,6 +124,12 @@ esac
 if [[ "$OS" == "darwin" ]]; then
   CONF_DIR="/usr/local/etc/dfpanel-agent"
   DATA_DIR="/usr/local/var/dfpanel-agent"
+fi
+
+if [[ "$UNINSTALL" -eq 1 ]]; then
+  echo "==> 卸载 DFPanel Agent（$OS）"
+  do_uninstall
+  exit 0
 fi
 
 echo "==> 操作系统: $OS/$ARCH，角色: $ROLES，运行时: $RUNTIME"

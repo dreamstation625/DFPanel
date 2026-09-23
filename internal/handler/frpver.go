@@ -65,12 +65,19 @@ func (h *FrpHandler) SaveSettings(c *gin.Context) {
 
 // ListVersions GET /api/frp-versions 可选版本列表（GitHub 官方接口 + 手填兜底 + 本机已缓存）
 func (h *FrpHandler) ListVersions(c *gin.Context) {
-	available, err := distrib.ListVersions()
+	// ?refresh=1 忽略面板侧缓存重新拉（界面上点「重新获取」时带上），否则命中 10 分钟缓存
+	var available []string
+	var err error
+	if c.Query("refresh") != "" {
+		available, err = distrib.ListVersionsFresh()
+	} else {
+		available, err = distrib.ListVersions()
+	}
 	msg := ""
 	if err != nil {
-		// 版本列表拿不到不阻塞功能：前端可手填版本号完成下载
-		msg = "读取官方版本列表失败（可手填版本号继续）：" + err.Error()
-		available = []string{}
+		// 拉不到官方列表就退回内置列表：下拉空着的话用户没法选，只能干瞪眼
+		msg = "读取官方版本列表失败，已用内置列表兜底（要更新的版本可直接手填）：" + err.Error()
+		available = distrib.FallbackVersions
 	}
 
 	cached := h.mgr.CachedVersions()
@@ -146,6 +153,17 @@ func (h *FrpHandler) LocalFrpActivate(c *gin.Context) {
 	base := setting.Load(h.cfg.FRPDownloadBase).FrpDownloadBase
 	if _, err := h.mgr.EnsureVersioned(version, base); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "准备 frps " + version + " 失败：" + err.Error()})
+		return
+	}
+
+	// 版本没变化就不用重启本机实例了
+	if cur := h.mgr.ActiveVersion(); cur != "" && cur == version {
+		c.JSON(http.StatusOK, gin.H{
+			"ok":      true,
+			"message": "当前已经是 frps " + version + "，没有变化",
+			"active":  cur,
+			"cached":  h.mgr.CachedVersions(),
+		})
 		return
 	}
 
@@ -320,7 +338,8 @@ func (h *FrpHandler) AgentFrpDownload(c *gin.Context) {
 		Type:       proto.CmdFrpDownload,
 		TargetType: proto.TargetAgent,
 		Payload:    frpVersionPayload(version),
-		TimeoutMs:  int((4 * time.Minute).Milliseconds()),
+		// 面板可能要先从上游抓包，镜像站慢的时候十几分钟才回来，等待窗口给足
+		TimeoutMs:  int((35 * time.Minute).Milliseconds()),
 	})
 	// 下载不改变期望版本，故不写 frp_version
 	h.writeAgentResult(c, a.ID, res, err, "")
