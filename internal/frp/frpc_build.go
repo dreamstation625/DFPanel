@@ -36,7 +36,7 @@ func BuildFrpcFromNode(node *model.Node, server *model.FrpsServer, proxies []mod
 	cfg := &FrpcConfig{}
 	cfg.ServerAddr = serverAddr
 	cfg.ServerPort = serverPort
-	cfg.Auth = buildClientAuth(node)
+	cfg.Auth = buildClientAuth(node, token)
 	cfg.User = node.User
 	cfg.ClientID = node.ClientID
 	// Agent 侧统一捕获 stdout 写日志文件，便于健康检查与面板查看日志
@@ -89,8 +89,11 @@ func isDigits(s string) bool {
 	return true
 }
 
-// buildClientAuth 客户端鉴权：token 与 tokenSource 互斥；oidc 走单独分支
-func buildClientAuth(node *model.Node) AuthClientConfig {
+// buildClientAuth 客户端鉴权：token 与 tokenSource 互斥；oidc 走单独分支。
+//
+// token 是已解析过的值（节点没填时取的是 frps 的 auth.token），注意别直接用 node.AuthToken：
+// 面板节点表单里「留空使用 frps 的 auth.token」靠的就是这个回退。
+func buildClientAuth(node *model.Node, token string) AuthClientConfig {
 	out := AuthClientConfig{Method: defaultString(node.AuthMethod, "token")}
 
 	if out.Method == "oidc" {
@@ -116,7 +119,7 @@ func buildClientAuth(node *model.Node) AuthClientConfig {
 		}
 		return out
 	}
-	out.Token = node.AuthToken
+	out.Token = token
 	return out
 }
 

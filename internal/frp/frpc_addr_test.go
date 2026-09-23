@@ -61,3 +61,29 @@ func TestServerPublicAddrStripsScheme(t *testing.T) {
 		t.Errorf("serverPort = %v，期望 7001（取 frps 的 bindPort）", m["serverPort"])
 	}
 }
+
+// 节点没填 authToken 时要回退用 frps 的 auth.token —— 面板表单里写的就是「留空使用 frps 的 auth.token」
+func TestNodeTokenFallsBackToServer(t *testing.T) {
+	server := &model.FrpsServer{Name: "s", BindPort: 7001, AuthToken: "srv-token"}
+	out, err := BuildFrpcFromNode(&model.Node{Name: "n"}, server, nil, nil, "")
+	if err != nil {
+		t.Fatalf("生成 frpc 配置失败：%v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("解析 frpc 配置失败：%v", err)
+	}
+	auth, _ := m["auth"].(map[string]any)
+	if auth == nil || auth["token"] != "srv-token" {
+		t.Errorf("auth = %v，期望回退到 frps 的 token", m["auth"])
+	}
+
+	// 节点自己填了 token 时以节点为准
+	out2, _ := BuildFrpcFromNode(&model.Node{Name: "n", AuthToken: "node-token"}, server, nil, nil, "")
+	var m2 map[string]any
+	_ = json.Unmarshal([]byte(out2), &m2)
+	auth2, _ := m2["auth"].(map[string]any)
+	if auth2 == nil || auth2["token"] != "node-token" {
+		t.Errorf("auth = %v，期望用节点自己的 token", m2["auth"])
+	}
+}
