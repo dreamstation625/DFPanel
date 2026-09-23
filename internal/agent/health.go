@@ -209,7 +209,7 @@ func lastLines(s string, n int) string {
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
-	return strings.Join(lines, " | ")
+	return strings.Join(lines, "\n")
 }
 
 func trimReason(s string) string {

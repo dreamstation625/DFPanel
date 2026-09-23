@@ -75,6 +75,7 @@ type AgentCommand struct {
 	TargetID   uint   `json:"targetId"`
 	Payload    string `gorm:"type:text" json:"payload"` // apply / rollback 时为配置全文
 	Version    int    `json:"version"`
+	Flags      string `gorm:"size:256" json:"flags"` // 附带元信息，例如 apply 时的自动启动开关
 	TimeoutMs  int    `json:"timeoutMs"`
 
 	Status  string    `gorm:"size:32;default:pending" json:"status"` // pending / sent / done / failed

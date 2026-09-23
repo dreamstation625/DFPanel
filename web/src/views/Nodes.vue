@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   agentApi,
@@ -57,6 +57,7 @@ function emptyNodeForm() {
   return {
     name: '',
     agentId: 0,
+    autoStart: false,
     serverId: 0,
     remark: '',
     // 身份
@@ -110,6 +111,7 @@ function nodeFormFrom(n: NodeInfo) {
     ...emptyNodeForm(),
     name: n.name,
     agentId: n.agentId,
+    autoStart: n.autoStart ?? false,
     serverId: n.serverId,
     remark: n.remark,
     clientId: n.clientId || '',
@@ -245,6 +247,8 @@ const previewText = ref('')
 const previewVisible = ref(false)
 const logText = ref('')
 const logVisible = ref(false)
+/** 日志内容容器：打开弹窗时滚到最底部 */
+const logBox = ref<HTMLElement | null>(null)
 
 // 历史版本（每次下发都会在 Agent 侧生成快照，可按版本回滚）
 const versionVisible = ref(false)
@@ -553,6 +557,16 @@ async function viewLog(n: NodeInfo) {
   const res = await nodeApi.log(n.id)
   logText.value = res.content || '（暂无日志）'
   logVisible.value = true
+  // 最新一行在最后：打开就滚到底，等弹窗动画结束再滚一次
+  await scrollLogToBottom()
+  window.setTimeout(scrollLogToBottom, 260)
+}
+
+/** 把日志窗口滚到底部 */
+async function scrollLogToBottom() {
+  await nextTick()
+  const el = logBox.value
+  if (el) el.scrollTop = el.scrollHeight
 }
 
 async function openInstall(n: NodeInfo) {
@@ -736,6 +750,10 @@ onMounted(load)
       <el-form label-width="210px">
         <el-form-item label="节点名称">
           <el-input v-model="form.name" placeholder="如 内网-数据库机" />
+        </el-form-item>
+        <el-form-item label="自动启动">
+          <el-switch v-model="form.autoStart" />
+          <span class="hint">Agent 重启后自动拉起；手动停止过的不再自动拉起</span>
         </el-form-item>
         <el-form-item label="托管 Agent" required>
           <el-select
@@ -1454,7 +1472,7 @@ onMounted(load)
     </el-dialog>
 
     <el-dialog v-model="logVisible" title="frpc 日志" width="760px">
-      <pre class="code-block">{{ logText }}</pre>
+      <pre ref="logBox" class="code-block">{{ logText }}</pre>
     </el-dialog>
 
     <el-dialog v-model="versionVisible" :title="`历史版本 · ${versionNode?.name ?? ''}`" width="920px">

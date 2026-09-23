@@ -101,6 +101,11 @@ type FrpsServer struct {
 	// 额外 JSON 片段（顶层浅合并，可覆盖已生成字段）
 	ExtraJSON string `gorm:"type:text" json:"extraJson"`
 
+	// AutoStart 面板 / Agent 重启后是否自动拉起该实例
+	AutoStart bool `gorm:"default:false" json:"autoStart"`
+	// ManualStopped 被手动停过：自动启动时跳过，手动启动或重启后清除
+	ManualStopped bool `gorm:"default:false" json:"manualStopped"`
+
 	// 部署模式：local = 面板本机一体化托管；agent = 由远端 Agent 托管
 	DeployMode string `gorm:"size:16;default:local" json:"deployMode"`
 	// AgentID 部署模式为 agent 时，指定由哪个 Agent 承载

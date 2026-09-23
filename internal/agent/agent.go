@@ -148,6 +148,7 @@ func (a *Agent) handleCommand(cmd proto.CommandData) proto.ResultData {
 
 	switch cmd.Type {
 	case proto.CmdApply:
+		a.applyAutoStartFlag(t, cmd.Flags)
 		out := a.ApplyConfig(t, cmd.Payload, cmd.Version)
 		return proto.ResultData{
 			OK:         out.OK,
@@ -163,6 +164,8 @@ func (a *Agent) handleCommand(cmd proto.CommandData) proto.ResultData {
 		if err := ctrl.Start(); err != nil {
 			return proto.ResultData{Message: "启动失败：" + err.Error()}
 		}
+		// 手动启动过：重新纳入自动启动
+		a.updateState(targetKey(t), func(s *instanceState) { s.ManualStopped = false })
 		if reason := a.confirmRunning(t); reason != "" {
 			return proto.ResultData{Message: reason, Running: false}
 		}
@@ -172,12 +175,16 @@ func (a *Agent) handleCommand(cmd proto.CommandData) proto.ResultData {
 		if err := ctrl.Stop(); err != nil {
 			return proto.ResultData{Message: "停止失败：" + err.Error()}
 		}
+		// 手动停过：Agent 重启后不再自动拉起
+		a.updateState(targetKey(t), func(s *instanceState) { s.ManualStopped = true })
 		return proto.ResultData{OK: true, Message: "已停止"}
 	case proto.CmdRestart:
 		ctrl := a.controller(t)
 		if err := ctrl.Restart(); err != nil {
 			return proto.ResultData{Message: "重启失败：" + err.Error()}
 		}
+		// 手动重启过：重新纳入自动启动
+		a.updateState(targetKey(t), func(s *instanceState) { s.ManualStopped = false })
 		if reason := a.confirmRunning(t); reason != "" {
 			return proto.ResultData{Message: reason, Running: false}
 		}
@@ -279,6 +286,12 @@ func (a *Agent) bootstrap() {
 		}
 
 		t := Target{Type: typ, ID: uint(id)}
+		// 有记录就按记录来：没开自动启动、或被手动停过的不拉起来；
+		// 没记录的是旧版本留下的实例，维持原来的自愈行为。
+		if st, tracked := a.trackedState(targetKey(t)); tracked && (!st.AutoStart || st.ManualStopped) {
+			log.Printf("跳过 %s-%d（未开启自动启动或已被手动停止）", kind, id)
+			continue
+		}
 		ctrl := a.controller(t)
 		if ctrl.Running() {
 			continue

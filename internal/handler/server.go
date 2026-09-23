@@ -195,6 +195,7 @@ func (h *ServerHandler) Apply(c *gin.Context) {
 			TargetID:   s.ID,
 			Payload:    content,
 			Version:    version,
+			Flags:      autoStartFlags(s.AutoStart),
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -287,6 +288,7 @@ func (h *ServerHandler) lifecycle(c *gin.Context, cmdType string) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": res.Message})
 			return
 		}
+		markServerStopped(s.ID, cmdType == proto.CmdStop)
 		c.JSON(http.StatusOK, gin.H{"message": res.Message, "status": h.statusOf(&s), "running": res.Running})
 		return
 	}
@@ -331,6 +333,7 @@ func (h *ServerHandler) lifecycle(c *gin.Context, cmdType string) {
 			return
 		}
 	}
+	markServerStopped(uint(id), cmdType == proto.CmdStop)
 	c.JSON(http.StatusOK, gin.H{"message": "操作完成", "status": h.statusOf(&s)})
 }
 
@@ -355,10 +358,10 @@ func (h *ServerHandler) tailSummary(id uint) string {
 		return "，日志暂无可读内容"
 	}
 	lines := strings.Split(strings.TrimSpace(content), "\n")
-	if len(lines) > 3 {
-		lines = lines[len(lines)-3:]
+	if len(lines) > 2 {
+		lines = lines[len(lines)-2:]
 	}
-	return "，日志：" + strings.Join(lines, " | ")
+	return "，日志：\n" + strings.Join(lines, "\n")
 }
 
 // Log GET /api/servers/:id/log 查看日志尾部

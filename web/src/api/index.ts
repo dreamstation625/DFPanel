@@ -91,6 +91,11 @@ export interface FrpsServer {
   // 额外 JSON 片段（顶层浅合并，可覆盖同类字段）
   extraJson: string
 
+  // 面板 / Agent 重启后是否自动拉起该实例
+  autoStart: boolean
+  // 被手动停过：自动启动时跳过
+  manualStopped?: boolean
+
   // 部署模式：local = 面板本机托管；agent = 由远端 Agent 托管
   deployMode: 'local' | 'agent'
   agentId: number
@@ -175,6 +180,7 @@ export function emptyServer(): FrpsServer {
 
     extraJson: '',
 
+    autoStart: false,
     deployMode: 'local',
     agentId: 0,
     publicAddr: '',
@@ -310,6 +316,10 @@ export interface NodeInfo {
   metadatas: string
 
   agentId: number
+  /** Agent 重启后是否自动拉起该 frpc */
+  autoStart: boolean
+  /** 被手动停过：自动启动时跳过 */
+  manualStopped?: boolean
   os: string
   arch: string
   version: string

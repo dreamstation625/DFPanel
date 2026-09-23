@@ -22,21 +22,50 @@ const form = reactive<SettingsValues>({
 const local = ref<FrpVersionState | null>(null)
 const pickerVisible = ref(false)
 
-/** 常用镜像源模板，点一下填进去；不硬编码为默认值，避免第三方代理失效后被动 */
+/**
+ * 常用下载源。公共加速站都是「站址 + 原始 GitHub 地址」的拼法，
+ * 随时可能失效，所以官方直连与自建示例一直留在列表里兜底。
+ */
 const PRESETS = [
   {
-    label: '官方直连',
+    label: '官方直连（github.com）',
     value: 'https://github.com/fatedier/frp/releases/download/v{version}/{asset}',
   },
   {
-    label: 'ghproxy 代理前缀',
-    value: 'https://ghproxy.net/https://github.com/fatedier/frp/releases/download/v{version}/{asset}',
+    label: 'gh-proxy.com',
+    value: 'https://gh-proxy.com/https://github.com/fatedier/frp/releases/download/v{version}/{asset}',
+  },
+  {
+    label: 'ghfast.top',
+    value: 'https://ghfast.top/https://github.com/fatedier/frp/releases/download/v{version}/{asset}',
+  },
+  {
+    label: 'ghfile.geekertao.top',
+    value: 'https://ghfile.geekertao.top/https://github.com/fatedier/frp/releases/download/v{version}/{asset}',
+  },
+  {
+    label: 'gh.xxooo.cf',
+    value: 'https://gh.xxooo.cf/https://github.com/fatedier/frp/releases/download/v{version}/{asset}',
+  },
+  {
+    label: 'gh.jasonzeng.dev',
+    value: 'https://gh.jasonzeng.dev/https://github.com/fatedier/frp/releases/download/v{version}/{asset}',
   },
   {
     label: '自建镜像（示例）',
     value: 'https://mirror.example.com/frp/v{version}/{asset}',
   },
 ]
+
+/** 当前模板命中的预设；手改过就为空，下拉显示占位文案 */
+const currentPreset = computed(() => {
+  const hit = PRESETS.find((p) => p.value === form.frpDownloadBase)
+  return hit ? hit.value : ''
+})
+
+function applyPreset(value: string) {
+  form.frpDownloadBase = value
+}
 
 const baseValid = computed(
   () => form.frpDownloadBase.includes('{version}') && form.frpDownloadBase.includes('{asset}'),
@@ -105,13 +134,18 @@ onMounted(load)
         <el-form-item label="下载地址模板" required>
           <el-input v-model="form.frpDownloadBase" placeholder="https://.../v{version}/{asset}" />
           <div class="hint">
-            占位符：<code>{version}</code> <code>{asset}</code> <code>{os}</code> <code>{arch}</code>。Agent 从面板拉取，无需访问 GitHub。
+            占位符：<code>{version}</code> <code>{asset}</code> <code>{os}</code> <code>{arch}</code>。Agent 从面板拉取，无需访问 GitHub；公共加速站失效就换一个。
           </div>
           <div class="presets">
-            <span class="presets-label">快速填入：</span>
-            <el-button v-for="p in PRESETS" :key="p.label" size="small" text type="primary" @click="form.frpDownloadBase = p.value">
-              {{ p.label }}
-            </el-button>
+            <el-select
+              size="small"
+              :model-value="currentPreset"
+              placeholder="选择下载源（自动填入模板）"
+              style="width: 300px"
+              @update:model-value="applyPreset"
+            >
+              <el-option v-for="p in PRESETS" :key="p.value" :label="p.label" :value="p.value" />
+            </el-select>
             <el-button size="small" text @click="form.frpDownloadBase = form.frpDownloadBaseDefault">恢复默认</el-button>
           </div>
           <el-text v-if="!baseValid" type="danger" size="small">
@@ -192,13 +226,10 @@ onMounted(load)
 }
 
 .presets {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 6px;
-}
-
-.presets-label {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  margin-right: 4px;
 }
 
 code {

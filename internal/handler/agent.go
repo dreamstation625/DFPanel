@@ -174,6 +174,7 @@ func (h *AgentHandler) Commands(c *gin.Context) {
 			TargetID:   cmd.TargetID,
 			Payload:    cmd.Payload,
 			Version:    cmd.Version,
+			Flags:      cmd.Flags,
 		})
 		if err := database.DB.Model(&model.AgentCommand{}).Where("id = ?", cmd.ID).
 			Updates(map[string]any{"status": "sent", "sent_at": now}).Error; err != nil {

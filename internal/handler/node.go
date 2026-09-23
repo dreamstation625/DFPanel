@@ -183,6 +183,7 @@ func (h *NodeHandler) Apply(c *gin.Context) {
 		TargetID:   n.ID,
 		Payload:    content,
 		Version:    version,
+		Flags:      autoStartFlags(n.AutoStart),
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -273,6 +274,7 @@ func (h *NodeHandler) control(c *gin.Context, cmdType string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": res.Message})
 		return
 	}
+	markNodeStopped(n.ID, cmdType == proto.CmdStop)
 	c.JSON(http.StatusOK, gin.H{"message": res.Message, "running": res.Running})
 }
 

@@ -87,6 +87,11 @@ type Node struct {
 	// AgentID 托管该节点 frpc 的 Agent（frpc 永远由 Agent 承载）
 	AgentID uint `gorm:"index" json:"agentId"`
 
+	// AutoStart Agent 重启后是否自动拉起该 frpc
+	AutoStart bool `gorm:"default:false" json:"autoStart"`
+	// ManualStopped 被手动停过：自动启动时跳过，手动启动或重启后清除
+	ManualStopped bool `gorm:"default:false" json:"manualStopped"`
+
 	// 运行时上报
 	OS         string     `gorm:"size:32" json:"os"`
 	Arch       string     `gorm:"size:32" json:"arch"`

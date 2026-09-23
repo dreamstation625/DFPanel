@@ -68,6 +68,8 @@ type CommandData struct {
 	TargetID   uint   `json:"targetId"`
 	Payload    string `json:"payload,omitempty"`
 	Version    int    `json:"version"`
+	// Flags 指令附带的小段 JSON 元信息（例如 apply 时的 {"autoStart":true}）
+	Flags string `json:"flags,omitempty"`
 }
 
 // TargetState 单个托管对象（frps / frpc）的运行态

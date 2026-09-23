@@ -29,6 +29,8 @@ func Setup(cfg *config.Config) *gin.Engine {
 
 	authHandler := handler.NewAuthHandler(cfg)
 	serverHandler := handler.NewServerHandler(mgr, hub)
+	// 面板启动时把「开了自动启动、且没被手动停过」的本机 frps 拉起来（异步，不拖慢启动）
+	go serverHandler.StartAutoServers()
 	agentHandler := handler.NewAgentHandler(hub)
 	agentManage := handler.NewAgentManageHandler(hub)
 	nodeHandler := handler.NewNodeHandler(hub, cfg)

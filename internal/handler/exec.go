@@ -54,6 +54,7 @@ func dispatch(hub *agenthub.Hub, cmd *model.AgentCommand) (dispatchResult, error
 		TargetID:   cmd.TargetID,
 		Payload:    cmd.Payload,
 		Version:    cmd.Version,
+		Flags:      cmd.Flags,
 	})
 	if err != nil {
 		return dispatchResult{}, err

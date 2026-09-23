@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   agentApi,
@@ -28,6 +28,8 @@ const previewVisible = ref(false)
 const logText = ref('')
 const logVisible = ref(false)
 const logLoading = ref(false)
+/** 日志内容容器：打开弹窗时滚到最底部，直接看到最新一行 */
+const logBox = ref<HTMLElement | null>(null)
 /** 正在执行的进程操作：start / stop / restart，用于按钮 loading */
 const acting = ref('')
 const activeTab = ref('basic')
@@ -239,6 +241,16 @@ async function openLog(id = form.value.id) {
   } finally {
     logLoading.value = false
   }
+  // 最新一行在最后：打开就滚到底，等弹窗动画结束再滚一次（否则容器高度还是 0）
+  await scrollLogToBottom()
+  window.setTimeout(scrollLogToBottom, 260)
+}
+
+/** 把日志窗口滚到底部 */
+async function scrollLogToBottom() {
+  await nextTick()
+  const el = logBox.value
+  if (el) el.scrollTop = el.scrollHeight
 }
 
 async function openVersions() {
@@ -408,6 +420,35 @@ onMounted(load)
     />
 
     <el-card>
+      <div class="proc-bar">
+        <el-button
+          type="success"
+          :disabled="isNew"
+          :loading="acting === 'start'"
+          @click="doAction('start')"
+        >
+          启动 frps
+        </el-button>
+        <el-button
+          type="warning"
+          :disabled="isNew"
+          :loading="acting === 'restart'"
+          @click="doAction('restart')"
+        >
+          重启
+        </el-button>
+        <el-button
+          type="danger"
+          :disabled="isNew"
+          :loading="acting === 'stop'"
+          @click="doAction('stop')"
+        >
+          停止
+        </el-button>
+        <span v-if="isNew" class="hint">请先保存配置后再操作进程</span>
+        <span v-else-if="form.deployMode === 'agent'" class="hint">将通过托管 Agent 在远端执行</span>
+      </div>
+
       <el-form label-width="250px">
         <el-tabs v-model="activeTab">
           <el-tab-pane label="基础监听" name="basic">
@@ -420,6 +461,10 @@ onMounted(load)
                 <el-radio-button value="agent">远端 Agent 托管</el-radio-button>
               </el-radio-group>
               <span class="hint">本机由面板启动 frps，Agent 托管则下发到目标服务器执行</span>
+            </el-form-item>
+            <el-form-item label="自动启动">
+              <el-switch v-model="form.autoStart" />
+              <span class="hint">面板重启后自动拉起；手动停止过的不再自动拉起</span>
             </el-form-item>
             <el-form-item v-if="form.deployMode === 'agent'" label="托管 Agent">
               <el-select v-model="form.agentId" placeholder="选择具备 frps 角色的 Agent" style="width: 280px">
@@ -929,33 +974,6 @@ onMounted(load)
         </el-tabs>
       </el-form>
 
-      <el-divider content-position="left">进程操作</el-divider>
-      <el-button
-        type="success"
-        :disabled="isNew"
-        :loading="acting === 'start'"
-        @click="doAction('start')"
-      >
-        启动 frps
-      </el-button>
-      <el-button
-        type="warning"
-        :disabled="isNew"
-        :loading="acting === 'restart'"
-        @click="doAction('restart')"
-      >
-        重启
-      </el-button>
-      <el-button
-        type="danger"
-        :disabled="isNew"
-        :loading="acting === 'stop'"
-        @click="doAction('stop')"
-      >
-        停止
-      </el-button>
-      <span v-if="isNew" class="hint">请先保存配置后再操作进程</span>
-      <span v-else-if="form.deployMode === 'agent'" class="hint">将通过托管 Agent 在远端执行</span>
     </el-card>
 
     <el-dialog v-model="previewVisible" title="frps.json 预览" width="720px">
@@ -963,7 +981,7 @@ onMounted(load)
     </el-dialog>
 
     <el-dialog v-model="logVisible" title="frps 日志" width="760px">
-      <pre v-loading="logLoading" class="code-block">{{ logText || '（暂无日志）' }}</pre>
+      <pre ref="logBox" v-loading="logLoading" class="code-block">{{ logText || '（暂无日志）' }}</pre>
     </el-dialog>
 
     <el-dialog v-model="versionVisible" title="历史版本（可回滚）" width="920px">
@@ -978,6 +996,22 @@ onMounted(load)
 </template>
 
 <style scoped>
+/* 进程操作栏：挪到表单上方，打开页面就能点到 */
+.proc-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.proc-bar .el-button + .el-button,
+.proc-bar .hint {
+  margin-left: 0;
+}
+
 .actions {
   display: flex;
   align-items: center;

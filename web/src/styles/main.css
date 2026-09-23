@@ -53,3 +53,14 @@ body {
 .el-form-item__label {
   padding-right: 12px;
 }
+
+/* 报错里常带日志，文本很长：允许换行，别挤成一行 */
+.el-message {
+  max-width: min(900px, 92vw);
+}
+
+.el-message .el-message__content {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}

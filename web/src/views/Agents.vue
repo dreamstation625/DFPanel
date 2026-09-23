@@ -18,10 +18,21 @@ const agents = ref<AgentInfo[]>([])
 // frp 版本管理（版本按 Agent 统一：该 Agent 上 frps 与 frpc 共用一个版本）
 const frpVisible = ref(false)
 const frpTarget = ref<AgentInfo | null>(null)
+/** 新建时没选 frp 版本：先弹版本选择器，关掉之后再把安装命令给出来 */
+const pendingInstall = ref<AgentInfo | null>(null)
 
 function openFrp(a: AgentInfo) {
   frpTarget.value = a
   frpVisible.value = true
+}
+
+/** frp 版本弹窗关闭后：刷新列表；新建流程里接着弹安装命令 */
+function onFrpClosed() {
+  load()
+  const a = pendingInstall.value
+  pendingInstall.value = null
+  // 同样等版本弹窗收起来再弹安装命令
+  if (a) window.setTimeout(() => openInstall(a), 200)
 }
 
 /** frp 版本展示：优先显示实际生效版本，未接管时按运行时给出说明 */
@@ -132,13 +143,17 @@ async function submitCreate() {
       frpVersion: pickedVersion || undefined,
     })
     createVisible.value = false
-    ElMessage.success(
-      pickedVersion
-        ? `Agent 已创建，上线后会自动下载 frp ${pickedVersion}（只预置，不切换不重启）`
-        : 'Agent 已创建，请复制安装命令到目标服务器执行',
-    )
     await load()
-    openInstall(created)
+    if (pickedVersion) {
+      ElMessage.success(`Agent 已创建，上线后会自动下载 frp ${pickedVersion}（只预置，不切换不重启）`)
+      openInstall(created)
+      return
+    }
+    // 没选版本：先把 frp 版本定下来，关掉弹窗再给安装命令
+    ElMessage.info('Agent 已创建，先选一个 frp 版本')
+    pendingInstall.value = created
+    // 等创建弹窗的收起动画走完再开版本弹窗，避免两层叠在一起
+    window.setTimeout(() => openFrp(created), 200)
   } finally {
     creating.value = false
   }
@@ -441,7 +456,7 @@ onMounted(load)
       target="agent"
       :target-id="frpTarget.id"
       :target-name="frpTarget.name"
-      @closed="load"
+      @closed="onFrpClosed"
     />
   </div>
 </template>
