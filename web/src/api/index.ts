@@ -469,6 +469,30 @@ export const agentApi = {
     request.get<unknown, InstallCommands>(`/agents/${id}/install-command`, { params: { os, runtime } }),
 }
 
+/** 面板或 Agent 程序与最新发布版的比较结果；与 frp 二进制版本无关。 */
+export interface ProgramVersionStatus {
+  current: string
+  latest: string
+  state: 'current' | 'update' | 'ahead' | 'unknown' | 'error'
+  updateAvailable: boolean
+  releaseUrl?: string
+  error?: string
+}
+
+export interface ProgramVersionCheckResult {
+  panel: ProgramVersionStatus
+  agents: { id: number; status: ProgramVersionStatus }[]
+  checkedAt: string
+}
+
+export const programVersionApi = {
+  check: (refresh = false) =>
+    request.get<unknown, ProgramVersionCheckResult>('/program-version/check', {
+      params: refresh ? { refresh: true } : undefined,
+      timeout: 30000,
+    }),
+}
+
 export const nodeApi = {
   list: () => request.get<unknown, NodeInfo[]>('/nodes'),
   create: (data: Partial<NodeInfo>) => request.post<unknown, NodeInfo>('/nodes', data),

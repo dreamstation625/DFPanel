@@ -63,6 +63,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 		authed.Use(middleware.JWT(cfg.JWTSecret))
 		{
 			authed.GET("/auth/profile", authHandler.Profile)
+			authed.GET("/program-version/check", handler.ProgramVersionCheck(cfg))
 
 			// 写操作统一使用 POST（兼容性优先，不使用 PUT / DELETE），读操作使用 GET
 			authed.GET("/servers", serverHandler.List)

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
-import { authApi } from '@/api'
+import { authApi, programVersionApi, type ProgramVersionStatus } from '@/api'
 import { DOC_MENU } from '@/utils/docs'
 
 const route = useRoute()
@@ -13,6 +13,8 @@ const username = computed(() => localStorage.getItem('dfpanel_user') || 'admin')
 
 // 面板版本号（构建时注入），显示在侧边栏底部
 const panelVersion = ref('')
+const versionCheck = ref<ProgramVersionStatus | null>(null)
+const checkingVersion = ref(false)
 const versionLabel = computed(() => {
   const v = panelVersion.value
   if (!v) return ''
@@ -21,13 +23,31 @@ const versionLabel = computed(() => {
 /** 预发布版本（0.0.2-beta）单独标色，避免与正式版混淆 */
 const isPrerelease = computed(() => panelVersion.value.includes('-'))
 
-onMounted(async () => {
+async function loadPanelVersion() {
   try {
     const res = await authApi.initStatus()
     panelVersion.value = res.version || ''
   } catch {
     panelVersion.value = ''
   }
+}
+
+async function checkVersion(refresh = false) {
+  checkingVersion.value = true
+  try {
+    const result = await programVersionApi.check(refresh)
+    versionCheck.value = result.panel
+    if (!panelVersion.value) panelVersion.value = result.panel.current
+  } catch {
+    versionCheck.value = { current: panelVersion.value, latest: '', state: 'error', updateAvailable: false, error: '无法连接面板版本检测接口' }
+  } finally {
+    checkingVersion.value = false
+  }
+}
+
+onMounted(() => {
+  void loadPanelVersion()
+  void checkVersion()
 })
 
 function onSelect(index: string) {
@@ -84,13 +104,20 @@ async function onCommand(cmd: string) {
           </el-menu-item>
         </el-sub-menu>
       </el-menu>
-      <div
-        v-if="versionLabel"
-        class="version"
-        :class="{ 'is-pre': isPrerelease }"
-        :title="isPrerelease ? `DFPanel ${panelVersion}（预发布版本）` : `DFPanel ${panelVersion}`"
-      >
-        {{ versionLabel }}<span v-if="isPrerelease" class="pre-tag">预发布</span>
+      <div class="version" :class="{ 'is-pre': isPrerelease }">
+        <div v-if="versionLabel" :title="isPrerelease ? `DFPanel ${panelVersion}（预发布版本）` : `DFPanel ${panelVersion}`">
+          {{ versionLabel }}<span v-if="isPrerelease" class="pre-tag">预发布</span>
+        </div>
+        <div v-if="versionCheck?.updateAvailable" class="update-notice">
+          <a :href="versionCheck.releaseUrl" target="_blank" rel="noopener noreferrer">新版 {{ versionCheck.latest }}</a>
+        </div>
+        <el-tooltip v-else-if="versionCheck?.state === 'error'" :content="versionCheck.error || '检测失败'">
+          <div class="check-error">版本检测失败</div>
+        </el-tooltip>
+        <div v-else-if="versionCheck?.state === 'current'" class="check-current">已是最新</div>
+        <div v-else-if="versionCheck?.state === 'ahead'" class="check-current">高于发布版</div>
+        <div v-else-if="versionCheck?.state === 'unknown'" class="check-error">版本未知</div>
+        <el-button link size="small" :loading="checkingVersion" @click="checkVersion(true)">检测版本</el-button>
       </div>
     </el-aside>
 
@@ -166,6 +193,23 @@ async function onCommand(cmd: string) {
   border-radius: 3px;
   font-size: 10px;
   vertical-align: 1px;
+}
+
+.update-notice a {
+  color: #e6a23c;
+  text-decoration: none;
+}
+
+.update-notice a:hover {
+  text-decoration: underline;
+}
+
+.check-error {
+  color: #f56c6c;
+}
+
+.check-current {
+  color: #67c23a;
 }
 
 .menu :deep(.el-menu-item),

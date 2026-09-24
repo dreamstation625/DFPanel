@@ -24,6 +24,7 @@
 - **配置下发与恢复**：面板保存配置版本，支持查看和回滚。Agent 启动时可从面板恢复缺失的、最近成功应用的配置，不覆盖已有的非空本地配置。
 - **自动启动**：面板和 Agent 重启后按自动启动开关恢复实例；被手动停止的实例不会自动拉起。
 - **frp 版本管理**：面板准备并分发 frp 二进制；同一 Agent 上的 frps 与 frpc 共用该 Agent 的 frp 版本。
+- **程序版本检测**：面板和 Agent 分别与 GitHub Releases 中的发布版本比较；正式版只检测正式版更新，预发布版也检测后续预发布版。检测仅提示可更新并提供发布页链接，不会自动升级。
 
 ## 技术栈与版本
 
@@ -53,6 +54,30 @@ flowchart LR
 
 > [!TIP]
 > 首次部署建议先启动面板并完成初始化，再在「Agent 管理」中创建 Agent，最后到目标机器执行面板生成的安装命令。
+
+### 面板部署脚本
+
+Linux 使用 [deploy-panel.sh](deploy-panel.sh)，选择 Docker（生成 Compose 配置）或二进制（注册 `dfpanel.service`）：
+
+```bash
+sudo bash deploy-panel.sh --mode docker --public-url http://192.168.1.10:7226
+sudo bash deploy-panel.sh --mode binary --public-url http://192.168.1.10:7226
+# 使用已经准备好的二进制：
+sudo bash deploy-panel.sh --mode binary --public-url http://192.168.1.10:7226 --binary ./output/dfpanel-linux-amd64
+```
+
+Windows 使用 [deploy-panel.ps1](deploy-panel.ps1)。二进制部署会注册开机启动的 **DFPanel Windows 服务**；选择 Docker 时，脚本仅显示手动部署步骤：
+
+```powershell
+# 请在管理员 PowerShell 中执行
+.\deploy-panel.ps1 -Mode Binary -PublicUrl http://192.168.1.10:7226
+.\deploy-panel.ps1 -Mode Binary -PublicUrl http://192.168.1.10:7226 -BinaryPath .\output\dfpanel-windows-amd64.exe
+.\deploy-panel.ps1 -Mode Docker
+```
+
+二进制模式默认尝试下载同目录 `VERSION` 对应的 GitHub Release 并校验 SHA256；Release 不存在时回退到本地 `output/` 构建产物。可通过 `--version` / `-Version` 指定其他版本。Linux 的数据目录为 `/var/lib/dfpanel`，Windows 为 `%ProgramData%\DFPanel\data`；重复部署不会删除数据。Windows 服务日志写入数据目录的 `panel.log`。
+
+Windows 脚本会检查二进制是否支持 Windows 服务。若当前 Release 是旧版本，请先用 `build.ps1` 构建当前源码，再用 `-BinaryPath` 指定生成的程序。
 
 ### Docker Compose
 
@@ -123,9 +148,12 @@ Agent 常用环境变量为 `DFPANEL_URL`、`DFPANEL_NODE_KEY`、`DFPANEL_NODE_S
 | 安装方式 | 卸载命令或操作 | 数据处理 |
 | --- | --- | --- |
 | Docker Compose 面板 | `docker compose down` | `./data` 目录保留 |
+| Linux 部署脚本的 Docker 面板 | `docker compose -f /opt/dfpanel/compose.yml down` | `/var/lib/dfpanel` 保留 |
 | Docker Compose Agent | `docker compose -f docker-compose.agent.yml down` | 默认保留命名卷中的 Agent 数据 |
 | `docker run` | `docker rm -f dfpanel` 或 `docker rm -f dfpanel-agent` | 挂载的数据目录或卷保留 |
 | 二进制面板 | 停止面板进程并删除面板程序 | `-data` 指定的目录保留，需自行决定是否删除 |
+| Linux 部署脚本的二进制面板 | `sudo systemctl disable --now dfpanel`，删除 `/etc/systemd/system/dfpanel.service` 和 `/usr/local/bin/dfpanel`，再执行 `sudo systemctl daemon-reload` | `/var/lib/dfpanel` 保留 |
+| Windows 部署脚本的二进制面板 | 管理员 PowerShell 执行 `Stop-Service DFPanel`、`sc.exe delete DFPanel`，服务退出后执行 `Remove-Item (Join-Path $env:ProgramData 'DFPanel\dfpanel.exe')` | `%ProgramData%\DFPanel\data` 保留 |
 | 脚本安装的 Agent | 运行下方对应平台的卸载脚本 | 默认保留 Agent 数据目录；`--purge` / `-Purge` 连数据一起删除 |
 
 Linux / macOS：

@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"dfpanel/internal/config"
 	"dfpanel/internal/database"
@@ -22,10 +24,30 @@ func main() {
 		fmt.Printf("dfpanel %s\n", version)
 		return
 	}
+	// 部署脚本据此确认二进制支持 Windows 服务协议，避免安装旧 Release 后无法启动。
+	if len(os.Args) > 1 && os.Args[1] == "-service-ready" {
+		if runtime.GOOS != "windows" {
+			os.Exit(1)
+		}
+		fmt.Println("DFPanel Windows service ready")
+		return
+	}
 
 	cfg := config.Load()
 	cfg.Version = version
+	closeLog, err := preparePanelLog(cfg)
+	if err != nil {
+		log.Fatalf("初始化服务日志失败: %v", err)
+	}
+	defer closeLog()
+	server := newPanelServer(cfg)
+	if err := servePanel(server, cfg); err != nil {
+		log.Fatalf("启动服务失败: %v", err)
+	}
+}
 
+// newPanelServer 准备面板的持久化数据和 HTTP 服务；交互运行与 Windows 服务共用此入口。
+func newPanelServer(cfg *config.Config) *http.Server {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		log.Fatalf("创建数据目录失败: %v", err)
 	}
@@ -41,9 +63,7 @@ func main() {
 	r := router.Setup(cfg)
 
 	log.Printf("DFPanel %s 已启动，请访问 http://localhost%s", version, cfg.Listen)
-	if err := r.Run(cfg.Listen); err != nil {
-		log.Fatalf("启动服务失败: %v", err)
-	}
+	return &http.Server{Addr: cfg.Listen, Handler: r}
 }
 
 // loadOrCreateSecret 读取或生成持久化的 JWT 密钥

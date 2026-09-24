@@ -3,17 +3,35 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   agentApi,
+  programVersionApi,
   settingApi,
   statusLabel,
   statusType,
   type AgentInfo,
   type CommandHistory,
   type InstallCommands,
+  type ProgramVersionStatus,
 } from '@/api'
 import FrpVersionPicker from '@/components/FrpVersionPicker.vue'
 
 const loading = ref(false)
 const agents = ref<AgentInfo[]>([])
+const versionStatuses = ref<Record<number, ProgramVersionStatus>>({})
+const versionChecking = ref(false)
+const versionCheckError = ref('')
+
+async function checkAgentVersions(refresh = false) {
+  versionChecking.value = true
+  try {
+    const result = await programVersionApi.check(refresh)
+    versionStatuses.value = Object.fromEntries(result.agents.map((item) => [item.id, item.status]))
+    versionCheckError.value = result.agents.find((item) => item.status.error)?.status.error || ''
+  } catch {
+    versionCheckError.value = '无法连接面板版本检测接口'
+  } finally {
+    versionChecking.value = false
+  }
+}
 
 // frp 版本管理（版本按 Agent 统一：该 Agent 上 frps 与 frpc 共用一个版本）
 const frpVisible = ref(false)
@@ -114,6 +132,7 @@ async function load() {
   loading.value = true
   try {
     agents.value = await agentApi.list()
+    void checkAgentVersions()
   } finally {
     loading.value = false
   }
@@ -260,6 +279,10 @@ onMounted(load)
       <div class="page-title">Agent 管理</div>
       <div class="actions">
         <el-tag type="success" effect="plain" style="margin-right: 8px">在线 {{ onlineCount }} / {{ agents.length }}</el-tag>
+        <el-tooltip v-if="versionCheckError" :content="versionCheckError">
+          <span class="version-error">版本检测失败</span>
+        </el-tooltip>
+        <el-button :loading="versionChecking" @click="checkAgentVersions(true)">检测 Agent 版本</el-button>
         <el-button @click="load">刷新</el-button>
         <el-button type="primary" @click="openCreate">新建 Agent</el-button>
       </div>
@@ -293,8 +316,16 @@ onMounted(load)
             <div class="sub">{{ row.os }} {{ row.arch }} {{ row.remoteAddr }}</div>
           </template>
         </el-table-column>
-        <el-table-column prop="version" label="Agent 版本" width="100">
-          <template #default="{ row }">{{ row.version || '—' }}</template>
+        <el-table-column prop="version" label="Agent 版本" width="135">
+          <template #default="{ row }">
+            <div>{{ row.version || '—' }}</div>
+            <el-tooltip v-if="versionStatuses[row.id]?.updateAvailable" :content="`最新发布版 ${versionStatuses[row.id].latest}`">
+              <a :href="versionStatuses[row.id].releaseUrl" target="_blank" rel="noopener noreferrer" class="agent-update">可更新</a>
+            </el-tooltip>
+            <div v-else-if="versionStatuses[row.id]?.state === 'current'" class="sub">已是最新</div>
+            <div v-else-if="versionStatuses[row.id]?.state === 'ahead'" class="sub">高于发布版</div>
+            <div v-else-if="versionStatuses[row.id]?.state === 'unknown'" class="sub">版本未知</div>
+          </template>
         </el-table-column>
         <el-table-column label="运行时" width="96">
           <template #default="{ row }">
@@ -486,6 +517,22 @@ onMounted(load)
 .sub {
   color: #909399;
   font-size: 12px;
+}
+
+.version-error {
+  color: #f56c6c;
+  font-size: 12px;
+  margin-right: 8px;
+}
+
+.agent-update {
+  color: #e6a23c;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.agent-update:hover {
+  text-decoration: underline;
 }
 
 .mono {
