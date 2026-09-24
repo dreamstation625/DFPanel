@@ -20,6 +20,8 @@ async function submit() {
     localStorage.setItem('dfpanel_user', res.user.username)
     ElMessage.success('登录成功')
     router.push('/dashboard')
+  } catch {
+    // 失败原因（账号密码错误、面板不可达）由 axios 拦截器统一弹窗，这里只收尾
   } finally {
     loading.value = false
   }

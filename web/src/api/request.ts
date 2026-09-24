@@ -21,6 +21,9 @@ request.interceptors.response.use(
     const msg = err.response?.data?.error || err.message || '请求失败'
     if (status === 401) {
       localStorage.removeItem('dfpanel_token')
+      // 401 也可能是「登录时账号密码错误」：提示必须照样弹，
+      // 否则登录页上点了登录什么都不发生（既不跳转、也不报错）
+      ElMessage.error({ message: msg, grouping: true })
       if (window.location.pathname !== '/login') {
         window.location.href = '/login'
       }
