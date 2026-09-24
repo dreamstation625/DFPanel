@@ -134,6 +134,10 @@ func (m *Manager) Start(id uint) error {
 	if _, err := os.Stat(bin); err != nil {
 		return fmt.Errorf("未找到 frps 二进制：%s", bin)
 	}
+	// active 槽位可能指向手动拷入 / 落在共享目录里的文件，执行位不一定在
+	if err := distrib.EnsureExecutable(bin); err != nil {
+		return fmt.Errorf("frps 二进制不可用：%w", err)
+	}
 
 	logFile, err := os.OpenFile(m.LogPath(id), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -145,7 +149,7 @@ func (m *Manager) Start(id uint) error {
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
-		return fmt.Errorf("启动 frps 失败: %w", err)
+		return fmt.Errorf("启动 frps 失败: %w%s", err, distrib.ExecHint(err))
 	}
 
 	m.procs[id] = &proc{cmd: cmd, logFile: logFile}

@@ -2,11 +2,32 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 )
+
+// InContainer 判断 Agent 自己是不是跑在容器里。
+//
+// 只用于给 runtime=docker 的挂载路径把关：Agent 在容器里时，它看到的路径
+// （/var/lib/dfpanel-agent/...）宿主 docker daemon 看不到，直接拿来 bind-mount
+// 会被 docker 建出一个同名空目录，报出来的却是「exec: is a directory」。
+func InContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	if b, err := os.ReadFile("/proc/1/cgroup"); err == nil {
+		s := string(b)
+		for _, marker := range []string{"docker", "containerd", "kubepods", "podman", "lxc"} {
+			if strings.Contains(s, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // 容器平台探测结果缓存：docker info 有几十到几百毫秒开销，
 // 而版本状态查询比较频繁，故缓存一段时间。

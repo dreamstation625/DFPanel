@@ -146,6 +146,9 @@ func EnsureFRPBinary(kind, version, goos, goarch, dir, base string) (string, err
 
 	dest := filepath.Join(dir, BinaryName(kind, ver, goos, goarch))
 	if fi, err := os.Stat(dest); err == nil && fi.Size() > 0 {
+		// 命中缓存也要确认可执行：手动拷进来的那份往往没有执行位，
+		// 否则启动时报一句 fork/exec ...: permission denied，很难往这上面想
+		_ = EnsureExecutable(dest)
 		return dest, nil
 	}
 
@@ -213,6 +216,39 @@ func EnsureFRPBinary(kind, version, goos, goarch, dir, base string) (string, err
 		return "", fmt.Errorf("下载的二进制版本与期望不一致：期望 %s，实际 %s", ver, got)
 	}
 	return dest, nil
+}
+
+// EnsureExecutable 确保二进制可执行（chmod 0755，跟随软链）。
+//
+// 手动拷进来的文件、以及落在 Windows/NAS 共享目录里的文件常常没有执行位；
+// 启动前补一刀，比让人对着 permission denied 猜要强。chmod 失败不返回错误 ——
+// 只读挂载等场景下补不了，真正的结果交给 exec 报。
+func EnsureExecutable(path string) error {
+	fi, err := os.Stat(path) // 跟随软链
+	if err != nil {
+		return err
+	}
+	if fi.IsDir() {
+		return fmt.Errorf("%s 是目录，不是 frp 二进制", path)
+	}
+	if fi.Mode().Perm()&0o111 == 0o111 {
+		return nil
+	}
+	_ = os.Chmod(path, 0o755)
+	return nil
+}
+
+// ExecHint 给 exec 的权限类报错补一句人话：只补最常见的两种成因，其余保持原样
+func ExecHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "permission denied") {
+		return ""
+	}
+	return "（二进制没有执行权限，或所在目录是不可执行的挂载（noexec）→ 检查数据目录的挂载方式，" +
+		"不要放在 Windows / NAS 共享目录上；面板与 Agent 的数据目录也不要挂成 :ro）"
 }
 
 // ---------- 面板侧缓存清单 ----------

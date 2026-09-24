@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"dfpanel/internal/distrib"
 )
 
 // Spec 描述一个被托管的 frp 进程（或容器）
@@ -23,11 +25,13 @@ type Spec struct {
 	PidPath       string
 	ContainerName string
 	// MountBinary docker 运行时专用：宿主机上由面板下发的 frp 二进制，挂进容器并覆盖 entrypoint。
-	// 底座镜像里没有 frp，所以它必须存在 —— 缺失时容器直接起不来（见 requireMountedBinary）。
+	// 底座镜像里没有 frp，所以它必须存在 —— 缺失时容器直接起不来（见 requireDockerReady）。
 	MountBinary string
 	// MountErr 拿不到 MountBinary 的原因（docker 不可用 / 容器平台不支持 / 槽位尚未就绪），
 	// 用于把「为什么起不来」讲清楚，而不是笼统报一句缺文件。
 	MountErr string
+	// PathErr 挂载路径本身不可用的原因（Agent 在容器里却没配宿主数据目录）
+	PathErr string
 }
 
 // fileReady 文件存在且非空（0 字节的槽位文件视为没有）
@@ -39,13 +43,18 @@ func fileReady(path string) bool {
 	return err == nil && fi.Size() > 0
 }
 
-// requireMountedBinary 容器运行时必须挂着面板下发的 frp 二进制。
+// requireDockerReady 容器运行时的启动前校验：路径可用 + 面板下发的二进制已就位。
 //
 // 底座镜像（alpine 之类）不含 frp，没有第二条退路：缺了就是起不来，
 // 要的是在面板上直接看到「先去设置页下载」，而不是静默跑起一个版本不明的 frp。
-func requireMountedBinary(spec Spec) error {
+// 路径这一项则是给「Agent 自己跑在容器里」兜的：那时它手里的路径宿主看不到，
+// 直接 bind-mount 会被 docker 建出一个空目录，报错却是一句难懂的 is a directory。
+func requireDockerReady(spec Spec) error {
 	if spec.Runtime != "docker" {
 		return nil
+	}
+	if spec.PathErr != "" {
+		return fmt.Errorf("%s 容器无法启动：%s", spec.Kind, spec.PathErr)
 	}
 	if spec.MountErr != "" {
 		return fmt.Errorf("%s 容器无法启动：%s", spec.Kind, spec.MountErr)
@@ -104,12 +113,18 @@ func (c *Controller) startProcess() error {
 		return fmt.Errorf("打开日志文件失败：%w", err)
 	}
 
+	// 手动拷入 / 落在共享目录里的二进制可能缺执行位，启动前补一刀
+	if err := distrib.EnsureExecutable(c.spec.BinPath); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("%s 二进制不可用：%w", c.spec.Kind, err)
+	}
+
 	cmd := exec.Command(c.spec.BinPath, "-c", c.spec.ConfigPath)
 	cmd.Stdout = f
 	cmd.Stderr = f
 	if err := cmd.Start(); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("启动 %s 失败：%w", c.spec.Kind, err)
+		return fmt.Errorf("启动 %s 失败：%w%s", c.spec.Kind, err, distrib.ExecHint(err))
 	}
 
 	c.gen++
@@ -143,8 +158,8 @@ func (c *Controller) startProcess() error {
 }
 
 func (c *Controller) startDocker() error {
-	// 底座镜像里没有 frp，没挂上面板下发的二进制就别起容器
-	if err := requireMountedBinary(c.spec); err != nil {
+	// 底座镜像里没有 frp，路径与二进制都得先过关
+	if err := requireDockerReady(c.spec); err != nil {
 		return err
 	}
 

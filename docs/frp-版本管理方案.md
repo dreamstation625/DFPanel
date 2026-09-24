@@ -191,9 +191,8 @@ POST /api/frp/local/activate       # 面板本机切换并重启全部本机 frp
 - 每实例独立版本（已选 Agent 级统一）
 - 存量实例自动升级（版本为空即不动）
 - Agent 自动升级灰度（属另一条待办，本次不碰）
-- Agent 自身以容器方式运行、再去托管兄弟容器时的挂载 —— 与现有「docker 运行时」
-  的前提一致（现有的 config 文件也是按宿主机绝对路径 bind-mount 的），因此
-  要求 Agent **直装在宿主机上**。若 Agent 在容器内，应改用 process 运行时。
+- Agent 自身以容器方式运行、再去托管兄弟容器时的挂载：靠 `DFPANEL_HOST_DATA_DIR`
+  把容器内路径翻译成宿主路径解决（见下文「Agent 在容器里」一节）。
 
 ## 5.1 Docker 运行时的版本替换（第 4 节）
 

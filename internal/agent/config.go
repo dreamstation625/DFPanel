@@ -21,8 +21,14 @@ type Config struct {
 	Secret     string `json:"secret"`
 	Roles      string `json:"roles"`     // 逗号分隔：frps / frpc，两者可并存
 	Runtime    string `json:"runtime"`   // process = 直接起进程；docker = 起容器
-	DataDir    string `json:"data_dir"`  // 配置与日志目录
-	FRPVersion string `json:"frp_version"`
+	DataDir    string `json:"data_dir"` // 配置与日志目录
+	// HostDataDir 宿主机上的数据目录，仅 runtime=docker 且 Agent 自身在容器里时需要。
+	//
+	// frp 容器由宿主机 docker daemon 创建，bind-mount 的源路径必须是宿主路径：
+	// 容器里的 /var/lib/dfpanel-agent 在宿主上不存在，直接挂会让 docker 建出一个空目录，
+	// 容器里就变成 exec "/dfpanel-frpc": is a directory。
+	HostDataDir string `json:"host_data_dir"`
+	FRPVersion  string `json:"frp_version"`
 	// 容器化运行时使用的镜像，留空取默认值
 	FrpsImage string `json:"frps_image"`
 	FrpcImage string `json:"frpc_image"`
@@ -57,6 +63,7 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.Roles = envOr("DFPANEL_ROLES", cfg.Roles)
 	cfg.Runtime = envOr("DFPANEL_RUNTIME", cfg.Runtime)
 	cfg.DataDir = envOr("DFPANEL_DATA_DIR", cfg.DataDir)
+	cfg.HostDataDir = envOr("DFPANEL_HOST_DATA_DIR", cfg.HostDataDir)
 	cfg.FRPVersion = envOr("DFPANEL_FRPVERSION", cfg.FRPVersion)
 	cfg.FrpsImage = envOr("DFPANEL_FRPS_IMAGE", cfg.FrpsImage)
 	cfg.FrpcImage = envOr("DFPANEL_FRPC_IMAGE", cfg.FrpcImage)
@@ -247,4 +254,20 @@ func (c *Config) ContainerCachedVersions(kind, goos, goarch string) []string {
 // ContainerName 容器名（docker 运行时）
 func ContainerName(kind string, id uint) string {
 	return fmt.Sprintf("dfpanel-%s-%d", kind, id)
+}
+
+// HostPath 把「Agent 自己看到的路径」翻译成宿主机路径。
+//
+// 只有 runtime=docker 且 Agent 自身跑在容器里时才需要：frp 容器由宿主 docker daemon 创建，
+// bind-mount 的源路径得是宿主路径。HostDataDir 为空（Agent 直装在宿主上）时原样返回。
+func (c *Config) HostPath(p string) string {
+	if c.HostDataDir == "" || p == "" {
+		return p
+	}
+	rel, err := filepath.Rel(c.DataDir, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		// 不在数据目录下：没法翻译，原样返回（例如用户自己指定的其它挂载点）
+		return p
+	}
+	return filepath.Join(c.HostDataDir, rel)
 }

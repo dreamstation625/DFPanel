@@ -129,28 +129,28 @@ func TestDockerRunArgsIgnoresEmptyMountFile(t *testing.T) {
 	if indexOf(args, "--entrypoint") >= 0 {
 		t.Errorf("空槽位文件不应触发覆盖：%v", args)
 	}
-	if err := requireMountedBinary(spec); err == nil {
+	if err := requireDockerReady(spec); err == nil {
 		t.Error("空槽位文件应当被拦下")
 	}
 }
 
 // 容器底座镜像里没有 frp：没有面板下发的二进制就不许起容器，
-// 且要把「为什么没有」讲清楚（docker 不可用 / 槽位没就绪）
-func TestRequireMountedBinary(t *testing.T) {
+// 且要把「为什么没有」讲清楚（docker 不可用 / 槽位没就绪 / 路径宿主看不到）
+func TestRequireDockerReady(t *testing.T) {
 	dir := t.TempDir()
 	slot := filepath.Join(dir, "frpc-container-linux-amd64")
 	if err := os.WriteFile(slot, []byte("fake-frpc"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := requireMountedBinary(Spec{Kind: "frpc", Runtime: "process", BinPath: slot}); err != nil {
+	if err := requireDockerReady(Spec{Kind: "frpc", Runtime: "process", BinPath: slot}); err != nil {
 		t.Fatalf("process 运行时不该受容器约束：%v", err)
 	}
-	if err := requireMountedBinary(Spec{Kind: "frpc", Runtime: "docker", MountBinary: slot}); err != nil {
+	if err := requireDockerReady(Spec{Kind: "frpc", Runtime: "docker", MountBinary: slot}); err != nil {
 		t.Fatalf("挂载就绪时应当放行：%v", err)
 	}
 
-	err := requireMountedBinary(Spec{Kind: "frpc", Runtime: "docker"})
+	err := requireDockerReady(Spec{Kind: "frpc", Runtime: "docker"})
 	if err == nil {
 		t.Fatal("没挂载二进制时应当报错")
 	}
@@ -161,12 +161,47 @@ func TestRequireMountedBinary(t *testing.T) {
 	}
 
 	// 平台探测失败（docker 不可用）时要把原始原因透出，而不是笼统说缺文件
-	err = requireMountedBinary(Spec{
+	err = requireDockerReady(Spec{
 		Kind:     "frpc",
 		Runtime:  "docker",
 		MountErr: "无法探测 docker 容器平台（docker info 失败）：Cannot connect to the Docker daemon",
 	})
 	if err == nil || !strings.Contains(err.Error(), "Docker daemon") {
 		t.Fatalf("应透出平台探测失败的原因，实际：%v", err)
+	}
+
+	// Agent 自己跑在容器里、没配宿主数据目录：挂载路径宿主看不到，必须拦下来
+	err = requireDockerReady(Spec{
+		Kind:        "frpc",
+		Runtime:     "docker",
+		MountBinary: slot,
+		PathErr:     "Agent 自身跑在容器里，但没有配置宿主机数据目录（DFPANEL_HOST_DATA_DIR）",
+	})
+	if err == nil || !strings.Contains(err.Error(), "DFPANEL_HOST_DATA_DIR") {
+		t.Fatalf("应拦下宿主路径不可用的情况，实际：%v", err)
+	}
+}
+
+// Agent 跑在容器里时，给 docker daemon 的挂载路径要换成宿主路径
+func TestHostPath(t *testing.T) {
+	cfg := &Config{DataDir: "/var/lib/dfpanel-agent"}
+	// 没配宿主机目录（Agent 直装在宿主上）：原样返回
+	if got := cfg.HostPath("/var/lib/dfpanel-agent/bin/frpc"); got != "/var/lib/dfpanel-agent/bin/frpc" {
+		t.Fatalf("未配置时应原样返回，实际 %s", got)
+	}
+
+	cfg.HostDataDir = "/opt/dfpanel-agent"
+	// 期望值用 filepath.Join 拼，免得在 Windows 上跑测试时被分隔符绊住
+	if got, want := cfg.HostPath("/var/lib/dfpanel-agent/bin/frpc-container-linux-amd64"),
+		filepath.Join("/opt/dfpanel-agent", "bin", "frpc-container-linux-amd64"); got != want {
+		t.Fatalf("应翻译成宿主路径，期望 %s，实际 %s", want, got)
+	}
+	if got, want := cfg.HostPath("/var/lib/dfpanel-agent/frpc-1.json"),
+		filepath.Join("/opt/dfpanel-agent", "frpc-1.json"); got != want {
+		t.Fatalf("应翻译成宿主路径，期望 %s，实际 %s", want, got)
+	}
+	// 不在数据目录下的路径不硬翻，免得出错到别的地方
+	if got := cfg.HostPath("/tmp/elsewhere"); got != "/tmp/elsewhere" {
+		t.Fatalf("数据目录外的路径应原样返回，实际 %s", got)
 	}
 }

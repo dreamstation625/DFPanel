@@ -264,6 +264,8 @@ func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime, image
 	}
 	if runtime == "docker" {
 		lines = append(lines,
+			// Agent 在容器里、frp 容器由宿主创建：告诉它挂载路径该用宿主上的哪一份
+			"  -e DFPANEL_HOST_DATA_DIR="+agentDataHostDir+" \\",
 			"  -v "+agentDataHostDir+":/var/lib/dfpanel-agent \\",
 			"  -v /var/run/docker.sock:/var/run/docker.sock \\")
 	} else {
@@ -288,6 +290,10 @@ func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, i
 	versionLine := ""
 	if ver := frpVersionArg(agent); ver != "" {
 		versionLine = "      DFPANEL_FRPVERSION: " + ver + "\n"
+	}
+	if runtime == "docker" {
+		// Agent 在容器里、frp 容器由宿主创建：挂载路径要用宿主上的那一份
+		versionLine += "      DFPANEL_HOST_DATA_DIR: " + agentDataHostDir + "\n"
 	}
 	return fmt.Sprintf(`services:
   dfpanel-agent:
