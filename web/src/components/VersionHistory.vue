@@ -6,9 +6,14 @@ const props = defineProps<{
   loading?: boolean
   /** 历史快照是否来自 Agent 本地（否则只有面板记录） */
   fromAgent?: boolean
+  /** 客户端节点的历史版本允许按需查看配置快照 */
+  showConfig?: boolean
 }>()
 
-const emit = defineEmits<{ (e: 'rollback', version: number): void }>()
+const emit = defineEmits<{
+  (e: 'rollback', version: number): void
+  (e: 'view-config', version: number): void
+}>()
 
 function fmtTime(v: ConfigVersionItem) {
   const t = v.time ? v.time * 1000 : v.createdAt ? Date.parse(v.createdAt) : 0
@@ -62,8 +67,15 @@ function canRollback(row: ConfigVersionItem) {
           <span class="sub">{{ row.message || '—' }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="110" fixed="right">
+      <el-table-column label="操作" :width="showConfig ? 170 : 110" fixed="right">
         <template #default="{ row }">
+          <el-button
+            v-if="showConfig"
+            link
+            type="primary"
+            :disabled="!row.hasConfig"
+            @click="emit('view-config', row.version)"
+          >查看配置</el-button>
           <el-button link type="primary" :disabled="!canRollback(row)" @click="emit('rollback', row.version)">
             回滚
           </el-button>

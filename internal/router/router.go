@@ -49,6 +49,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 		agentAPI := api.Group("/agent")
 		{
 			agentAPI.POST("/register", agentHandler.Register)
+			agentAPI.GET("/configs", agentHandler.ManagedConfigs)
 			agentAPI.POST("/heartbeat", agentHandler.Heartbeat)
 			// 拉取指令会把指令标记为已下发，属于写操作，因此用 POST
 			agentAPI.POST("/commands", agentHandler.Commands)
@@ -102,6 +103,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 			authed.GET("/nodes/:id/log", nodeHandler.Log)
 			authed.GET("/nodes/:id/install-command", installHandler.NodeInstallCommand)
 			authed.GET("/nodes/:id/versions", nodeHandler.Versions)
+			authed.GET("/nodes/:id/versions/:version/config", nodeHandler.VersionConfig)
 			authed.POST("/nodes/:id/rollback", nodeHandler.Rollback)
 
 			// 隧道（frpc 代理）

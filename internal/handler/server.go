@@ -116,6 +116,7 @@ func (h *ServerHandler) Update(c *gin.Context) {
 		req.DeployMode = old.DeployMode
 	}
 	req.Status = old.Status
+	req.ManualStopped = old.ManualStopped
 
 	if err := checkPortConflict(&req, req.ID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

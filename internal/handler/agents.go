@@ -111,24 +111,31 @@ func (h *AgentManageHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Agent 不存在"})
 		return
 	}
-	var req model.Agent
+	var req struct {
+		Name   string `json:"name"`
+		Remark string `json:"remark"`
+		Roles  string `json:"roles"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
 		return
 	}
 
-	req.ID = old.ID
-	req.CreatedAt = old.CreatedAt
-	req.NodeKey = old.NodeKey
-	req.Secret = old.Secret
-	req.Status = old.Status
-	req.LastSeen = old.LastSeen
-
-	if err := database.DB.Save(&req).Error; err != nil {
+	// 编辑表单只包含这三个字段；其他状态由注册、心跳和版本操作维护。
+	// 整行 Save 会把未提交的 frp 实际版本、期望版本及运行时清空。
+	if err := database.DB.Model(&old).Updates(map[string]any{
+		"name":   req.Name,
+		"remark": req.Remark,
+		"roles":  req.Roles,
+	}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败：" + err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, req)
+	if err := database.DB.First(&old, old.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取保存结果失败：" + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, old)
 }
 
 // Delete DELETE /api/agents/:id

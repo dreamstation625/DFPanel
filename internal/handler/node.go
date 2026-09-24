@@ -117,6 +117,7 @@ func (h *NodeHandler) Update(c *gin.Context) {
 	req.NodeKey = old.NodeKey
 	req.Secret = old.Secret
 	req.Status = old.Status
+	req.ManualStopped = old.ManualStopped
 
 	if err := database.DB.Save(&req).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败：" + err.Error()})
@@ -311,6 +312,41 @@ func (h *NodeHandler) Versions(c *gin.Context) {
 		"current":   res.Running,
 		"versions":  mergeVersions(res.Versions, dbList),
 	})
+}
+
+// VersionConfig GET /api/nodes/:id/versions/:version/config 读取该节点指定版本的原始配置快照。
+// 先查面板留存记录，缺失时再读在线 Agent 的同一目标和版本，不重新生成当前配置。
+func (h *NodeHandler) VersionConfig(c *gin.Context) {
+	var n model.Node
+	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+		return
+	}
+	version, err := strconv.Atoi(c.Param("version"))
+	if err != nil || version <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "版本号不合法"})
+		return
+	}
+	record, err := findVersionRecord(proto.TargetNode, n.ID, version)
+	if err == nil && record.Content != "" {
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, gin.H{"content": record.Content})
+		return
+	}
+	// 面板记录缺失时，尝试从在线 Agent 上仍保留的该版本快照读取。
+	if n.AgentID != 0 && h.hub != nil && h.hub.Online(n.AgentID) {
+		res, dispatchErr := dispatch(h.hub, &model.AgentCommand{
+			AgentID: n.AgentID, Type: proto.CmdVersionConfig,
+			TargetType: proto.TargetNode, TargetID: n.ID, Version: version,
+			TimeoutMs: 15000,
+		})
+		if dispatchErr == nil && !res.Queued && res.OK && res.Content != "" {
+			c.Header("Cache-Control", "no-store")
+			c.JSON(http.StatusOK, gin.H{"content": res.Content})
+			return
+		}
+	}
+	c.JSON(http.StatusNotFound, gin.H{"error": "该版本的配置快照不存在"})
 }
 
 // Rollback POST /api/nodes/:id/rollback 回滚到指定历史版本（由托管 Agent 应用并校验）

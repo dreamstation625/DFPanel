@@ -44,7 +44,7 @@
 ## 3. 通信
 
 - **长连接**：`GET /api/agent/ws`，Agent 主动反连；面板借此实时下发指令并接收结果。
-- **降级**：WebSocket 不可用时，Agent 轮询 `GET /api/agent/commands`（15s 级退避），结果通过 `POST /api/agent/report` 上报。
+- **降级**：WebSocket 不可用时，Agent 轮询 `POST /api/agent/commands`（15s 级退避），结果通过 `POST /api/agent/report` 上报。
 - **离线排队**：Agent 离线时面板把指令写入 `agent_commands`（`pending`），Agent 上线后自动补发。
 - **鉴权**：`sign = HMAC-SHA256(secret, "nodeKey.ts")`，时间戳 ±5 分钟防重放，不依赖 Origin。
 
@@ -140,6 +140,11 @@ docker run -d --name dfpanel-agent --restart unless-stopped \
 镜像不内置 frp：frp 二进制由面板下发，Agent 首次需要时按面板记录的期望版本下载到数据目录 `bin/`。
 面板侧不再替 Agent 现抓上游（抓取一律在「设置 → frp 二进制」由管理员触发），面板没备好时
 Agent 会明确报错提示先去设置页下载。
+
+Agent 启动时若发现托管的 `frpc-<id>.json` 或 `frps-<id>.json` 缺失，会通过签名接口向面板拉取
+**最近一次成功应用**的配置快照，写回数据目录后按「自动启动」和「手动停止」状态恢复实例。
+已有的非空本地配置不会被覆盖。面板暂时不可达时，Agent 会继续使用已有配置并重试补齐。
+从未成功应用过配置的节点或服务端没有可恢复快照，仍需在面板点击一次「应用配置」。
 
 ### 5.3 frps / frpc 容器化运行（runtime=docker）
 
@@ -292,7 +297,7 @@ cd web && rm package-lock.json && npm install --package-lock-only
 
 ## 7. 接口一览
 
-Agent 面（签名鉴权）：`POST /api/agent/register`、`POST /api/agent/heartbeat`、`POST /api/agent/commands`、`POST /api/agent/report`、`GET /api/agent/ws`
+Agent 面（签名鉴权）：`POST /api/agent/register`、`GET /api/agent/configs`（当前 Agent 最近成功应用的 frpc/frps 配置）、`POST /api/agent/heartbeat`、`POST /api/agent/commands`、`POST /api/agent/report`、`GET /api/agent/ws`
 
 管理面（JWT）。**方法约定：写操作一律 POST，读操作 GET，不使用 PUT / DELETE。**
 
@@ -320,6 +325,7 @@ Agent 面（签名鉴权）：`POST /api/agent/register`、`POST /api/agent/hear
 | POST | `/api/proxies/:id/delete` | 删除隧道 |
 | GET | `/api/config-versions?targetType=&targetId=` | 配置版本历史（回滚依据） |
 | GET | `/api/servers/:id/versions`、`/api/nodes/:id/versions` | 历史版本列表（Agent 本地快照 + 面板记录） |
+| GET | `/api/nodes/:id/versions/:version/config` | 查看客户端节点指定历史版本的配置正文 |
 | POST | `/api/servers/:id/rollback`、`/api/nodes/:id/rollback` | 回滚到指定版本，body `{"version": N}` |
 
 frps 服务端：`GET /api/servers`、`POST /api/servers`、`GET /api/servers/:id`、`POST /api/servers/:id/update`、`POST /api/servers/:id/delete`、`GET /api/servers/:id/config`、`POST /api/servers/:id/apply|start|stop|restart`、`GET /api/servers/:id/log`。
@@ -333,7 +339,7 @@ frps 服务端：`deployMode=agent` + `agentId` 时，`apply` / `start` / `stop`
 | 概览 | `/dashboard` | frps / Agent / 节点统计，服务端与节点的部署位置与状态 |
 | frps 服务端 | `/server` | 多服务端配置：新建（自动挑选空闲端口）/ 下拉切换 / 保存 / 保存并应用 / 删除；部署模式切换（本机托管 / 远端 Agent 托管）、选择托管 Agent、填写 publicAddr；下发失败自动回滚有明确提示 |
 | Agent 管理 | `/agents` | 列表（在线状态、主机、版本、最后心跳）、创建/编辑（角色）、安装命令（Linux/Windows × 进程/Docker × 脚本/docker run/compose）、重置令牌、指令历史 |
-| 客户端节点 | `/nodes` | 节点 CRUD（绑定托管 Agent、关联 frps、连接地址、TLS、协议）、隧道管理抽屉、应用配置、启停重启、配置预览、日志、安装命令 |
+| 客户端节点 | `/nodes` | 节点 CRUD（绑定托管 Agent、关联 frps、连接地址、TLS、协议）、隧道管理抽屉、应用配置、启停重启、配置预览、日志、版本配置查看 |
 | 隧道 | 节点页抽屉 | tcp / udp / http / https / stcp / sudp / xtcp，本地与远端端口、域名/子域名、分组、加密压缩、启用开关 |
 
 节点与隧道的修改不会立即生效，需点击「应用配置」由 Agent 下发并做健康校验。

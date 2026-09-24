@@ -15,11 +15,12 @@ type versionView struct {
 	Size      int64     `json:"size"`
 	Time      int64     `json:"time"`
 	Checksum  string    `json:"checksum"`
-	Current   bool      `json:"current"`  // 与当前生效配置一致
-	Status    string    `json:"status"`   // applied / unverified / rolled_back / failed
-	Message   string    `json:"message"`  // 下发结果说明（含回滚原因）
+	Current   bool      `json:"current"` // 与当前生效配置一致
+	Status    string    `json:"status"`  // applied / unverified / rolled_back / failed
+	Message   string    `json:"message"` // 下发结果说明（含回滚原因）
 	CreatedAt time.Time `json:"createdAt"`
-	OnAgent   bool      `json:"onAgent"` // Agent 本地是否还保留该版本快照（可回滚）
+	OnAgent   bool      `json:"onAgent"`   // Agent 本地是否还保留该版本快照（可回滚）
+	HasConfig bool      `json:"hasConfig"` // 面板或在线 Agent 是否有可查看的配置快照
 }
 
 // loadVersionRecords 面板侧的配置版本记录（content 不回传给前端）
@@ -37,6 +38,7 @@ func loadVersionRecords(targetType string, targetID uint) []versionView {
 			Status:    cv.Status,
 			Message:   cv.Message,
 			CreatedAt: cv.CreatedAt,
+			HasConfig: cv.Content != "",
 		})
 	}
 	return out
@@ -59,6 +61,7 @@ func mergeVersions(agentList []proto.HistoryEntry, dbList []versionView) []versi
 		v.Checksum = e.Checksum
 		v.Current = e.Current
 		v.OnAgent = true
+		v.HasConfig = true
 		out = append(out, v)
 		seen[e.Version] = true
 	}

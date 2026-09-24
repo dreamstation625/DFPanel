@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -134,7 +135,7 @@ func (h *Hub) Send(agentID uint, env proto.Envelope, timeout time.Duration) (pro
 	}
 }
 
-// UpdateState 更新 Agent 上报的运行态，并刷新 Agent 在线信息
+// UpdateState 统一处理 WebSocket 与 HTTP 心跳，保存运行态和 frp 实际版本。
 func (h *Hub) UpdateState(agentID uint, hb proto.HeartbeatData, remoteAddr string) {
 	now := time.Now()
 
@@ -157,6 +158,15 @@ func (h *Hub) UpdateState(agentID uint, hb proto.HeartbeatData, remoteAddr strin
 	}
 	if hb.Hostname != "" {
 		updates["hostname"] = hb.Hostname
+	}
+	if hb.Runtime != "" {
+		updates["runtime"] = hb.Runtime
+	}
+	if hb.FrpVersion != "" {
+		updates["frp_installed_version"] = hb.FrpVersion
+	}
+	if len(hb.FrpCached) > 0 {
+		updates[model.AgentFRPCachedVersionsColumn] = strings.Join(hb.FrpCached, ",")
 	}
 	if err := database.DB.Model(&model.Agent{}).Where("id = ?", agentID).Updates(updates).Error; err != nil {
 		log.Printf("更新 Agent(%d) 心跳失败: %v", agentID, err)

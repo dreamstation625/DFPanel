@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+// AgentFRPCachedVersionsColumn 固定现有数据库列名，避免改名时丢失已缓存版本记录。
+// GORM 将 FRPCachedVersions 默认映射为 f_rpcached_versions。
+const AgentFRPCachedVersionsColumn = "f_rpcached_versions"
+
 // Agent 部署在远端机器上的守护程序（单一二进制，可同时托管 frps 与 frpc）
 type Agent struct {
 	ID     uint   `gorm:"primaryKey" json:"id"`
@@ -24,8 +28,8 @@ type Agent struct {
 	// 版本粒度按 Agent 统一：该 Agent 上的 frps 与 frpc 共用一个 frp 版本。
 	// FRPVersion 为空表示不管理，此时沿用机器上现有的二进制，仅提示可更新。
 	FRPVersion          string `gorm:"size:32" json:"frpVersion"`
-	FRPInstalledVersion string `gorm:"size:32" json:"frpInstalledVersion"` // active 槽位实际版本（心跳上报）
-	FRPCachedVersions   string `gorm:"size:512" json:"frpCachedVersions"`  // 已缓存版本，逗号分隔（心跳上报）
+	FRPInstalledVersion string `gorm:"size:32" json:"frpInstalledVersion"`                           // active 槽位实际版本（心跳上报）
+	FRPCachedVersions   string `gorm:"column:f_rpcached_versions;size:512" json:"frpCachedVersions"` // 已缓存版本，逗号分隔（心跳上报）
 	// FRPUpdatedAt 最近一次版本切换时间
 	FRPUpdatedAt *time.Time `json:"frpUpdatedAt"`
 
@@ -78,10 +82,10 @@ type AgentCommand struct {
 	Flags      string `gorm:"size:256" json:"flags"` // 附带元信息，例如 apply 时的自动启动开关
 	TimeoutMs  int    `json:"timeoutMs"`
 
-	Status  string    `gorm:"size:32;default:pending" json:"status"` // pending / sent / done / failed
-	Result  string    `gorm:"size:1024" json:"result"`
-	SentAt  *time.Time `json:"sentAt"`
-	DoneAt  *time.Time `json:"doneAt"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	Status    string     `gorm:"size:32;default:pending" json:"status"` // pending / sent / done / failed
+	Result    string     `gorm:"size:1024" json:"result"`
+	SentAt    *time.Time `json:"sentAt"`
+	DoneAt    *time.Time `json:"doneAt"`
+	CreatedAt time.Time  `json:"createdAt"`
+	UpdatedAt time.Time  `json:"updatedAt"`
 }

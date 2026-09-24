@@ -70,6 +70,17 @@ func (c *Client) Heartbeat(hb proto.HeartbeatData) error {
 	return c.post("/api/agent/heartbeat", hb, &out)
 }
 
+// ManagedConfigs 读取面板为当前 Agent 保存的最近成功应用配置。
+func (c *Client) ManagedConfigs() ([]proto.ManagedConfig, error) {
+	var out struct {
+		Configs []proto.ManagedConfig `json:"configs"`
+	}
+	if err := c.get("/api/agent/configs", &out); err != nil {
+		return nil, err
+	}
+	return out.Configs, nil
+}
+
 // PullCommands 拉取待执行指令（离线补发 / 轮询降级）
 // 面板会把这些指令标记为已下发，属于写操作，因此统一用 POST
 func (c *Client) PullCommands() ([]proto.CommandData, error) {

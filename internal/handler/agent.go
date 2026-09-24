@@ -1,13 +1,14 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"gorm.io/gorm"
 
 	"dfpanel/internal/agenthub"
 	"dfpanel/internal/database"
@@ -118,6 +119,61 @@ func (h *AgentHandler) Register(c *gin.Context) {
 	})
 }
 
+// ManagedConfigs GET /api/agent/configs 仅返回当前 Agent 托管对象的最近成功应用快照。
+// 配置含鉴权信息，必须经过 Agent 签名鉴权，且不允许浏览器或代理缓存。
+func (h *AgentHandler) ManagedConfigs(c *gin.Context) {
+	agent, ok := h.agentAuth(c)
+	if !ok {
+		return
+	}
+	configs := make([]proto.ManagedConfig, 0)
+	appendLatest := func(targetType string, id uint, autoStart, manualStopped bool) error {
+		var record model.ConfigVersion
+		err := database.DB.Where("target_type = ? AND target_id = ? AND status = ? AND content <> ?",
+			targetType, id, "applied", "").Order("version desc").First(&record).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		configs = append(configs, proto.ManagedConfig{
+			TargetType: targetType, TargetID: id, Version: record.Version,
+			Content: record.Content, AutoStart: autoStart, ManualStopped: manualStopped,
+		})
+		return nil
+	}
+	if agent.HasRole("frpc") {
+		var nodes []model.Node
+		if err := database.DB.Where("agent_id = ?", agent.ID).Order("id asc").Find(&nodes).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "查询托管节点失败"})
+			return
+		}
+		for _, n := range nodes {
+			if err := appendLatest(proto.TargetNode, n.ID, n.AutoStart, n.ManualStopped); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "查询节点配置快照失败"})
+				return
+			}
+		}
+	}
+	if agent.HasRole("frps") {
+		var servers []model.FrpsServer
+		if err := database.DB.Where("agent_id = ? AND deploy_mode = ?", agent.ID, "agent").
+			Order("id asc").Find(&servers).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "查询托管服务端失败"})
+			return
+		}
+		for _, s := range servers {
+			if err := appendLatest(proto.TargetServer, s.ID, s.AutoStart, s.ManualStopped); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "查询服务端配置快照失败"})
+				return
+			}
+		}
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"configs": configs})
+}
+
 // Heartbeat POST /api/agent/heartbeat 状态上报（WebSocket 不可用时的降级通道）
 func (h *AgentHandler) Heartbeat(c *gin.Context) {
 	agent, ok := h.agentAuth(c)
@@ -130,23 +186,6 @@ func (h *AgentHandler) Heartbeat(c *gin.Context) {
 		return
 	}
 	h.hub.UpdateState(agent.ID, hb, c.ClientIP())
-
-	// frp 版本与运行时信息随心跳落库，供界面在 Agent 离线时也能展示上次已知状态
-	if hb.FrpVersion != "" || len(hb.FrpCached) > 0 || hb.Runtime != "" {
-		updates := map[string]any{}
-		if hb.Runtime != "" {
-			updates["runtime"] = hb.Runtime
-		}
-		if hb.FrpVersion != "" {
-			updates["frp_installed_version"] = hb.FrpVersion
-		}
-		if len(hb.FrpCached) > 0 {
-			updates["frp_cached_versions"] = strings.Join(hb.FrpCached, ",")
-		}
-		if len(updates) > 0 {
-			_ = database.DB.Model(&model.Agent{}).Where("id = ?", agent.ID).Updates(updates).Error
-		}
-	}
 	c.JSON(http.StatusOK, gin.H{"serverTime": time.Now().Unix()})
 }
 
@@ -219,6 +258,19 @@ func (h *AgentHandler) Report(c *gin.Context) {
 		status = "failed"
 	}
 	markCommand(cmd.ID, status, req.Message)
+	if req.OK {
+		// 离线排队的启停指令通过 HTTP report 完成，面板也要保存手动停止意图，
+		// 供 Agent 丢失配置文件后的启动恢复使用。
+		switch cmd.Type {
+		case proto.CmdStop, proto.CmdStart, proto.CmdRestart:
+			switch cmd.TargetType {
+			case proto.TargetNode:
+				markNodeStopped(cmd.TargetID, cmd.Type == proto.CmdStop)
+			case proto.TargetServer:
+				markServerStopped(cmd.TargetID, cmd.Type == proto.CmdStop)
+			}
+		}
+	}
 
 	// apply 结果回写配置版本状态，形成可追溯的变更历史
 	if cmd.Type == "apply" || cmd.Type == "rollback" {

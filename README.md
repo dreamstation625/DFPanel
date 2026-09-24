@@ -1,138 +1,164 @@
-# DFPanel
+<h1 align="center">DFPanel</h1>
 
-frp 的可视化控制面板。面板与 frps / frpc 分离部署，通过 Agent 统一托管服务端与客户端。
+<p align="center"><strong>一个面板，统一管理 frps、frpc 和隧道。</strong></p>
 
+<p align="center">
+  基于 <a href="https://github.com/fatedier/frp">frp</a> 的可视化管理面板。面板独立部署，远端 Agent 托管服务端与客户端。
+</p>
 
-## 功能
+<p align="center">
+  <img alt="Go 1.26" src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&amp;logoColor=white" />
+  <img alt="Vue 3.5" src="https://img.shields.io/badge/Vue-3.5-42B883?logo=vuedotjs&amp;logoColor=white" />
+  <img alt="Docker Ready" src="https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&amp;logoColor=white" />
+  <img alt="AGPL-3.0" src="https://img.shields.io/badge/License-AGPL--3.0-blue" />
+</p>
 
-- **服务端** —— frps 的各项参数都在界面上改，能建多个，新建时自动挑同机空闲端口
-- **Agent** —— 一个进程同时托管多个 frps 和 frpc，进程 / 容器两种运行时，重启后自动恢复
-- **节点与隧道** —— tcp / udp / http / https / stcp / sudp / xtcp，含访问端配置，能下发、启停、看日志
-- **自动启动** —— 服务端和节点都有开关，面板或 Agent 重启后自动拉起，手动停过的不拉
-- **frp 版本** —— 二进制由面板下发，按实例切版本，下载源可换镜像
-- **下发与回滚** —— 下发前先校验，出明确故障自动回滚上一版，也能看历史版本手动回滚
+<p align="center">
+  <a href="#主要功能">功能</a> · <a href="#技术栈与版本">技术栈</a> · <a href="#安装">安装</a> · <a href="#卸载">卸载</a> · <a href="#文档与源码">文档</a>
+</p>
 
-## 架构
+## 主要功能
 
+- **服务端与客户端管理**：创建多个 frps 服务端和 frpc 节点，配置 TCP、UDP、HTTP、HTTPS、STCP、SUDP、XTCP 等隧道。
+- **分离部署**：一个 Agent 可同时托管多个 frps 和 frpc；支持直接运行进程或通过 Docker 运行实例。
+- **配置下发与恢复**：面板保存配置版本，支持查看和回滚。Agent 启动时可从面板恢复缺失的、最近成功应用的配置，不覆盖已有的非空本地配置。
+- **自动启动**：面板和 Agent 重启后按自动启动开关恢复实例；被手动停止的实例不会自动拉起。
+- **frp 版本管理**：面板准备并分发 frp 二进制；同一 Agent 上的 frps 与 frpc 共用该 Agent 的 frp 版本。
+
+## 技术栈与版本
+
+| 部分 | 技术与版本 | 用途 |
+| --- | --- | --- |
+| 面板后端与 Agent | Go 1.26、Gin 1.12、GORM 1.31 | API、Agent 通信、配置和实例管理 |
+| 数据库 | SQLite（`github.com/glebarez/sqlite` 1.11） | 面板数据、配置版本和指令队列 |
+| 前端 | Vue 3.5、TypeScript 5.6、Element Plus 2.8、Vue Router 4.4 | 管理界面 |
+| 前端构建与请求 | Vite 6、Axios 1.7 | 构建静态资源、调用 API |
+| 部署 | Go 内嵌前端资源、Docker / Docker Compose | 单文件面板或容器部署 |
+
+版本依据为 [go.mod](go.mod)、[web/package.json](web/package.json) 和 Dockerfile。源码构建需要 Go 1.26；前端构建建议使用 Node.js 22（与 Dockerfile、CI 一致）。使用已构建的二进制或镜像时，运行机器无需安装 Go 和 Node.js。
+
+## 工作方式
+
+```mermaid
+flowchart LR
+    Browser["浏览器"] -->|HTTP| Panel["DFPanel 面板<br/>Web UI · API · SQLite"]
+    Agent["远端 Agent<br/>frps / frpc"] -->|主动连接| Panel
+    Panel -->|配置与指令| Agent
+    Agent --> Runtime["frp 实例<br/>进程或 Docker 容器"]
 ```
-        ┌──────────────── 面板（dfpanel） ────────────────┐
-        │  Web UI   REST API   AgentHub(WebSocket Server) │
-        │  SQLite   配置版本库   指令队列                 │
-        └───────────────▲────────────────────────────────┘
-                        │ Agent 主动反连（面板不主动外连）
-         ┌──────────────┴───────────┐        ┌────────────────────┐
-         │  Agent（服务器 A）        │        │  Agent（服务器 B）   │
-         │  roles = frps,frpc       │        │  roles = frpc       │
-         │  ├ frps-1 (进程 / 容器)   │        │  └ frpc-7 (进程/容器)│
-         │  └ frpc-3 (进程 / 容器)   │        └────────────────────┘
-         └──────────────────────────┘
-```
 
+面板负责保存配置、分发二进制和下发指令；Agent 负责目标机器上的配置文件及实例运行。新建服务端或节点后，需要在面板点击一次「应用配置」。此后如果 Agent 本地配置文件缺失，启动时会尝试拉取最近成功应用的版本。
 
-开发语言：后端 Go 1.26（Gin + GORM + SQLite），前端 Vue 3.5 + Element Plus 2.8（Vite 6 构建）。
+## 安装
 
-开发环境：Go 1.26+、Node 18+。
+> [!TIP]
+> 首次部署建议先启动面板并完成初始化，再在「Agent 管理」中创建 Agent，最后到目标机器执行面板生成的安装命令。
 
-frps / frpc 是 Agent 拉起的子进程，但**不跟着 Agent 一起退出** —— Agent 重启或升级时隧道不中断。Agent 把子进程 pid 记在 `<数据目录>/<实例>.pid`，
-重启后先确认「进程还在、且确实是它」再接管，不会重复启动（否则会撞端口）。所以卸载 Agent 不会自动停掉这些实例，卸载脚本会按 pid 文件显式清理。
+### Docker Compose
 
-## 快速开始
+1. 修改 [docker-compose.yml](docker-compose.yml) 中的 `DFPANEL_PUBLIC_URL`，填入 Agent 能访问的面板地址。
+2. 启动面板：
 
-```powershell
-.\build.ps1                       # 构建面板，出宿主平台和 linux amd64 两份（在 output/）
-.\build.ps1 -SkipFrontend         # 只编译后端（复用现有 web/dist）
-.\build.ps1 -TargetOS linux -TargetArch arm64   # 只交叉编译指定平台
-.\build.ps1 -AllPlatforms         # 一次产出 4 个平台的面板
-.\build.ps1 -Agent                # 编译 Agent -> output/dfpanel-agent-<os>-<arch>
-.\build.ps1 -Agent -AllPlatforms  # 一次产出 4 个平台的 Agent
-.\build.ps1 -Docker [-Agent]      # 构建面板 / Agent 镜像
-```
+   ```bash
+   docker compose up -d
+   ```
 
-Linux / macOS 用 `./build.sh`，参数等价。改完前端依赖要用普通 `npm install` 重新生成 `web/package-lock.json`，否则容器里 `vite build` 会因缺平台原生包失败。
+3. 打开 `http://<面板地址>:7226`，按初始化页面创建管理员账号。
+4. 在「Agent 管理」新建 Agent，选择 `frps`、`frpc` 或两种角色，再复制页面生成的 Docker 安装命令到目标机器执行。
 
-启动面板：
+也可以修改 [docker-compose.agent.yml](docker-compose.agent.yml) 中的面板地址、安装令牌和角色，再启动 Agent：
 
 ```bash
-# 二进制
-./dfpanel -listen :7226 -data ./data -public-url http://1.2.3.4:7226
-
-# Docker
-docker run -d --name dfpanel --restart unless-stopped \
-  -e DFPANEL_PUBLIC_URL=http://1.2.3.4:7226 \
-  -v dfpanel-data:/data \
-  --network host \
-  dreamstation625/dfpanel:latest
-
-# Compose（面板 + 内置 frps，数据在 ./data）
-docker compose up -d
-```
-
-`--network host` 时不用映射端口，frps 的 7000、dashboard 7500、vhost 80/443 直接生效；非 Linux 环境改成 `-p 7226:7226 -p 7000:7000 -p 7500:7500`（见 `docker-compose.yml` 注释）。
-
-| 参数 | 环境变量 | 默认值 | 说明 |
-|---|---|---|---|
-| `-listen` | `DFPANEL_LISTEN` | `:7226` | 监听地址 |
-| `-data` | `DFPANEL_DATA_DIR` | `./data` | 数据目录 |
-| `-public-url` | `DFPANEL_PUBLIC_URL` | 按请求推断 | 面板对外地址，用于生成安装命令和 frpc 连接地址 |
-| `-agent-image` | `DFPANEL_AGENT_IMAGE` | `dreamstation625/dfpanel-agent:latest` | Docker 安装命令用的 Agent 镜像 |
-| `-jwt-secret` | `DFPANEL_JWT_SECRET` | 自动生成并持久化 | JWT 签名密钥 |
-| `-token-expire` | — | `24` | 登录有效期（小时） |
-
-第一次访问进初始化向导，设好管理员账号就能登录。
-
-装 Agent：在「Agent 管理」新建一个（勾上 frps / frpc 角色），面板会给一条安装命令，复制到目标机器上跑。
-
-```bash
-# Docker
-docker run -d --name dfpanel-agent --restart unless-stopped \
-  -e DFPANEL_URL=http://<panel>:7226 \
-  -e DFPANEL_NODE_KEY=<nodeKey> \
-  -e DFPANEL_NODE_SECRET=<secret> \
-  -e DFPANEL_ROLES=frps,frpc \
-  -e DFPANEL_RUNTIME=process \
-  -v dfpanel-agent-data:/var/lib/dfpanel-agent \
-  --network host \
-  dreamstation625/dfpanel-agent:latest
-
-# 二进制
-curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- \
-  --panel http://<panel>:7226 --node-key <KEY> --secret <SECRET> --roles frps,frpc
-
-# Compose（先把 docker-compose.agent.yml 里的地址和令牌填上）
 docker compose -f docker-compose.agent.yml up -d
 ```
 
-**卸载**：把命令换成 `--uninstall`（Windows 用 `-Uninstall`），默认保留数据目录，加 `--purge` / `-Purge` 连数据一起删。
+Compose 示例默认使用 Linux host 网络。使用端口映射时，请按实际 frps 监听端口、Dashboard 端口及隧道端口调整映射。Agent 的 `DFPANEL_RUNTIME` 默认为 `process`；选择 `docker` 时还需挂载 Docker socket，示例见 [Agent 部署文档](docs/agent-架构与部署.md)。请保留面板和 Agent 的数据卷，容器重建后才能继续使用原有数据。
+
+### 二进制
+
+如果项目已发布对应平台的二进制，可从 [Releases](https://github.com/dreamstation625/DFPanel/releases) 下载；也可以在源码目录构建：
 
 ```bash
-curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- --uninstall [--purge]
+# Linux / macOS：面板和 Agent 分别构建
+./build.sh
+./build.sh --agent
 ```
 
-## 目录结构
-
-```
-cmd/agent/                        Agent 入口
-internal/                         Agent 实现、面板后端、frp 配置与版本管理、HTTP 接口
-web/                              Vue 3 前端（产物嵌入二进制）
-docs/                             架构与部署文档
-Dockerfile*  docker-compose*.yml  build.ps1  build.sh
-.github/workflows/                CI：镜像构建、release 二进制
+```powershell
+# Windows PowerShell：面板和 Agent 分别构建
+.\build.ps1
+.\build.ps1 -Agent
 ```
 
-## 版本与发布
+构建产物位于 `output/`，文件名含操作系统与架构。以 Linux amd64 面板为例：
 
-`VERSION` 是面板版本，`VERSION.agent` 是 Agent 版本（缺省跟随面板）。Agent 版本没变时 CI 不再重建 Agent 镜像。
+```bash
+./output/dfpanel-linux-amd64 -listen :7226 -data ./data -public-url http://<面板地址>:7226
+```
 
-## 文档
+首次访问面板完成初始化。安装远端 Agent 时，使用「Agent 管理 → 安装命令」生成的命令：Linux / macOS 脚本注册系统服务，Windows 脚本注册开机启动的计划任务。安装命令包含 Agent 密钥，请在目标机器上执行并妥善保管。
 
-- [docs/agent-架构与部署.md](docs/agent-架构与部署.md)：分离部署、Agent 运行时、回滚判定、Docker 部署、接口一览
-- [docs/frp-版本管理方案.md](docs/frp-版本管理方案.md)：版本化存储、下载与激活流程
+面板的 Agent 下载接口从数据目录的 `bin/agent-<系统>-<架构>`（Windows 加 `.exe`）读取文件。构建脚本产物名带 `dfpanel-` 前缀，需要放置成接口要求的文件名。例如面板数据目录为 `./data` 时，可准备 Linux amd64 Agent：
 
-## 参考
+```bash
+mkdir -p ./data/bin
+cp ./output/dfpanel-agent-linux-amd64 ./data/bin/agent-linux-amd64
+```
 
-- [VaalaCat/frp-panel](https://github.com/VaalaCat/frp-panel)（灵感来源）
-- [fatedier/frp](https://github.com/fatedier/frp) ｜ [gofrp.org](https://gofrp.org/zh-cn/docs/)（官方文档）
+若安装脚本返回 404，请先确认面板数据目录和对应平台的 Agent 文件；详细说明见 [Agent 部署文档](docs/agent-架构与部署.md)。
 
-## 支持
+### 常用配置
 
-本项目由 **WorkBuddy** 支持。
+| 面板参数 | 环境变量 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `-listen` | `DFPANEL_LISTEN` | `:7226` | 面板监听地址 |
+| `-data` | `DFPANEL_DATA_DIR` | `./data` | 面板数据库、配置和二进制缓存目录 |
+| `-public-url` | `DFPANEL_PUBLIC_URL` | 按请求推断 | Agent 能访问的面板地址 |
+| `-agent-image` | `DFPANEL_AGENT_IMAGE` | `dreamstation625/dfpanel-agent:latest` | 面板生成 Docker 安装命令时使用的镜像 |
+
+Agent 常用环境变量为 `DFPANEL_URL`、`DFPANEL_NODE_KEY`、`DFPANEL_NODE_SECRET`、`DFPANEL_ROLES`、`DFPANEL_RUNTIME` 和 `DFPANEL_DATA_DIR`。角色可设为 `frps`、`frpc` 或 `frps,frpc`。完整参数和部署示例见 [Agent 部署文档](docs/agent-架构与部署.md)。
+
+## 卸载
+
+| 安装方式 | 卸载命令或操作 | 数据处理 |
+| --- | --- | --- |
+| Docker Compose 面板 | `docker compose down` | `./data` 目录保留 |
+| Docker Compose Agent | `docker compose -f docker-compose.agent.yml down` | 默认保留命名卷中的 Agent 数据 |
+| `docker run` | `docker rm -f dfpanel` 或 `docker rm -f dfpanel-agent` | 挂载的数据目录或卷保留 |
+| 二进制面板 | 停止面板进程并删除面板程序 | `-data` 指定的目录保留，需自行决定是否删除 |
+| 脚本安装的 Agent | 运行下方对应平台的卸载脚本 | 默认保留 Agent 数据目录；`--purge` / `-Purge` 连数据一起删除 |
+
+Linux / macOS：
+
+```bash
+curl -fsSL http://<面板地址>:7226/install.sh -o install.sh
+sudo bash install.sh --uninstall
+# 确定不再需要 Agent 数据时：sudo bash install.sh --uninstall --purge
+```
+
+Windows（管理员 PowerShell）：
+
+```powershell
+Invoke-WebRequest -Uri 'http://<面板地址>:7226/install.ps1' -OutFile .\install.ps1
+.\install.ps1 -Uninstall
+# 确定不再需要 Agent 数据时：.\install.ps1 -Uninstall -Purge
+```
+
+Agent 卸载脚本会停止其托管的 frp 实例并注销系统服务或计划任务。卸载后，可在面板的「Agent 管理」中删除对应记录。
+
+## 文档与源码
+
+| 入口 | 内容 |
+| --- | --- |
+| [Agent 架构与部署](docs/agent-架构与部署.md) | 分离部署、安装、运行时与配置回滚 |
+| [frp 版本管理方案](docs/frp-版本管理方案.md) | 二进制缓存、下载和版本切换 |
+| [项目源码](https://github.com/dreamstation625/DFPanel) | 源码与发布记录 |
+| [问题反馈](https://github.com/dreamstation625/DFPanel/issues) | 使用问题与功能建议 |
+
+## 来源与许可
+
+本项目的界面管理思路受到 [VaalaCat/frp-panel](https://github.com/VaalaCat/frp-panel) 启发；隧道能力基于 [fatedier/frp](https://github.com/fatedier/frp)，配置项可查阅 [frp 官方文档](https://gofrp.org/zh-cn/docs/)。本项目按仓库中的 [GNU AGPLv3 许可证](LICENSE) 发布。
+
+## 项目支持
+
+本项目由 **WorkBuddy** 支持。使用问题和功能建议可通过 [GitHub Issues](https://github.com/dreamstation625/DFPanel/issues) 提交。

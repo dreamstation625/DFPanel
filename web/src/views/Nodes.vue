@@ -12,7 +12,6 @@ import {
   type AgentInfo,
   type ConfigVersionItem,
   type FrpsServer,
-  type InstallCommands,
   type NodeInfo,
   type ProxyConfig,
   type VisitorInfo,
@@ -233,15 +232,6 @@ function emptyVisitorForm() {
   }
 }
 
-// 安装命令
-const installVisible = ref(false)
-const installTarget = ref<NodeInfo | null>(null)
-const installOS = ref('linux')
-const installRuntime = ref<'process' | 'docker'>('process')
-const installMode = ref<'binary' | 'docker' | 'compose'>('binary')
-const installCmds = ref<InstallCommands | null>(null)
-const installLoading = ref(false)
-
 // 配置预览 / 日志
 const previewText = ref('')
 const previewVisible = ref(false)
@@ -256,6 +246,10 @@ const versionLoading = ref(false)
 const versions = ref<ConfigVersionItem[]>([])
 const versionsFromAgent = ref(false)
 const versionNode = ref<NodeInfo | null>(null)
+const versionConfigVisible = ref(false)
+const versionConfigLoading = ref(false)
+const versionConfigText = ref('')
+const versionConfigNumber = ref(0)
 
 const agentName = (id: number) => agents.value.find((a) => a.id === id)?.name ?? (id ? `#${id}` : '未绑定')
 const agentOnline = (id: number) => !!agents.value.find((a) => a.id === id)?.online
@@ -292,14 +286,6 @@ const PLUGIN_PLACEHOLDER: Record<string, string> = {
 }
 
 const pluginPlaceholder = computed(() => PLUGIN_PLACEHOLDER[proxyForm.pluginType] || '{}')
-
-const installCommand = computed(() => {
-  const c = installCmds.value
-  if (!c) return ''
-  if (installMode.value === 'binary') return c.binary
-  if (installMode.value === 'docker') return c.docker
-  return c.compose
-})
 
 async function load() {
   loading.value = true
@@ -569,14 +555,6 @@ async function scrollLogToBottom() {
   if (el) el.scrollTop = el.scrollHeight
 }
 
-async function openInstall(n: NodeInfo) {
-  installTarget.value = n
-  installMode.value = 'binary'
-  installRuntime.value = 'process'
-  installVisible.value = true
-  await loadInstall()
-}
-
 async function openVersions(n: NodeInfo) {
   versionNode.value = n
   versionVisible.value = true
@@ -588,6 +566,23 @@ async function openVersions(n: NodeInfo) {
     if (res.message) ElMessage.warning(res.message)
   } finally {
     versionLoading.value = false
+  }
+}
+
+async function viewVersionConfig(version: number) {
+  const n = versionNode.value
+  if (!n) return
+  versionConfigNumber.value = version
+  versionConfigText.value = ''
+  versionConfigVisible.value = true
+  versionConfigLoading.value = true
+  try {
+    const res = await nodeApi.versionConfig(n.id, version)
+    versionConfigText.value = res.content
+  } catch {
+    versionConfigVisible.value = false
+  } finally {
+    versionConfigLoading.value = false
   }
 }
 
@@ -609,34 +604,6 @@ async function rollbackVersion(version: number) {
   }
   await load()
   if (versionNode.value) await openVersions(versionNode.value)
-}
-
-async function loadInstall() {
-  const n = installTarget.value
-  if (!n) return
-  installLoading.value = true
-  try {
-    installCmds.value = await nodeApi.installCommand(n.id, installOS.value, installRuntime.value)
-  } finally {
-    installLoading.value = false
-  }
-}
-
-async function copy(text: string) {
-  if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-  }
-  ElMessage.success('已复制到剪贴板')
 }
 
 async function removeNode(n: NodeInfo) {
@@ -737,7 +704,6 @@ onMounted(load)
             <el-button link @click="preview(row)">配置</el-button>
             <el-button link @click="viewLog(row)">日志</el-button>
             <el-button link @click="openVersions(row)">版本</el-button>
-            <el-button link @click="openInstall(row)">安装</el-button>
             <el-button link @click="openEdit(row)">编辑</el-button>
             <el-button link type="danger" @click="removeNode(row)">删除</el-button>
           </template>
@@ -1433,41 +1399,6 @@ onMounted(load)
       </template>
     </el-dialog>
 
-    <el-dialog v-model="installVisible" title="在该节点所在机器安装 Agent" width="860px">
-      <div v-if="installTarget" v-loading="installLoading">
-        <el-descriptions :column="2" border size="small" style="margin-bottom: 12px">
-          <el-descriptions-item label="节点">{{ installTarget.name }}</el-descriptions-item>
-          <el-descriptions-item label="nodeKey">
-            <span class="mono">{{ installTarget.nodeKey }}</span>
-            <el-button link type="primary" @click="copy(installTarget?.nodeKey || '')">复制</el-button>
-          </el-descriptions-item>
-        </el-descriptions>
-
-        <div class="install-bar">
-          <el-radio-group v-model="installOS" size="small" @change="loadInstall">
-            <el-radio-button value="linux">Linux / macOS</el-radio-button>
-            <el-radio-button value="windows">Windows</el-radio-button>
-          </el-radio-group>
-          <el-radio-group v-model="installRuntime" size="small" style="margin-left: 12px" @change="loadInstall">
-            <el-radio-button value="process">进程运行</el-radio-button>
-            <el-radio-button value="docker">Docker 容器运行</el-radio-button>
-          </el-radio-group>
-        </div>
-
-        <el-tabs v-model="installMode">
-          <el-tab-pane label="一键脚本" name="binary" />
-          <el-tab-pane label="docker run" name="docker" />
-          <el-tab-pane label="docker compose" name="compose" />
-        </el-tabs>
-
-        <pre class="code-block">{{ installCommand }}</pre>
-      </div>
-      <template #footer>
-        <el-button @click="installVisible = false">关闭</el-button>
-        <el-button type="primary" @click="copy(installCommand)">复制命令</el-button>
-      </template>
-    </el-dialog>
-
     <el-dialog v-model="previewVisible" title="frpc.json 预览" width="720px">
       <pre class="code-block">{{ previewText }}</pre>
     </el-dialog>
@@ -1481,8 +1412,19 @@ onMounted(load)
         :versions="versions"
         :loading="versionLoading"
         :from-agent="versionsFromAgent"
+        show-config
+        @view-config="viewVersionConfig"
         @rollback="rollbackVersion"
       />
+    </el-dialog>
+
+    <el-dialog
+      v-model="versionConfigVisible"
+      :title="`历史配置 · ${versionNode?.name ?? ''} · v${versionConfigNumber}`"
+      width="760px"
+      append-to-body
+    >
+      <pre v-loading="versionConfigLoading" class="code-block">{{ versionConfigText }}</pre>
     </el-dialog>
 
     <FrpVersionPicker
@@ -1551,12 +1493,6 @@ onMounted(load)
   justify-content: space-between;
   margin-bottom: 12px;
   gap: 12px;
-}
-
-.install-bar {
-  display: flex;
-  align-items: center;
-  margin-bottom: 4px;
 }
 
 .code-block {

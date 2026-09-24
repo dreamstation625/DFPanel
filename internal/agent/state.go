@@ -46,7 +46,7 @@ func (a *Agent) trackedState(key string) (instanceState, bool) {
 }
 
 // updateState 更新某个实例的状态并落盘
-func (a *Agent) updateState(key string, fn func(*instanceState)) {
+func (a *Agent) updateState(key string, fn func(*instanceState)) error {
 	stateMu.Lock()
 	defer stateMu.Unlock()
 	states := a.loadStates()
@@ -55,11 +55,13 @@ func (a *Agent) updateState(key string, fn func(*instanceState)) {
 	states[key] = st
 	b, err := json.MarshalIndent(states, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
 	if err := os.WriteFile(a.statePath(), b, 0o600); err != nil {
 		log.Printf("写入实例状态失败：%v", err)
+		return err
 	}
+	return nil
 }
 
 // applyAutoStartFlag 解析 apply 指令里带的自动启动开关

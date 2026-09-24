@@ -23,13 +23,14 @@ const (
 
 // 指令类型
 const (
-	CmdApply    = "apply"
-	CmdStart    = "start"
-	CmdStop     = "stop"
-	CmdRestart  = "restart"
-	CmdLog      = "log"
-	CmdRollback = "rollback" // 回滚到指定历史版本（payload: {"targetVersion":N}）
-	CmdVersions = "versions" // 列出 Agent 本地保存的历史配置版本
+	CmdApply         = "apply"
+	CmdStart         = "start"
+	CmdStop          = "stop"
+	CmdRestart       = "restart"
+	CmdLog           = "log"
+	CmdRollback      = "rollback"       // 回滚到指定历史版本（payload: {"targetVersion":N}）
+	CmdVersions      = "versions"       // 列出 Agent 本地保存的历史配置版本
+	CmdVersionConfig = "version_config" // 读取 Agent 本地指定版本的配置正文（version: N）
 
 	// CmdFrpActivate 把指定版本切为 active 槽位并重启该 Agent 上全部托管实例。
 	// 只做切换：二进制一律由面板下发，面板没有该版本时面板侧会直接拒绝，不下发指令。
@@ -68,6 +69,16 @@ type CommandData struct {
 	Version    int    `json:"version"`
 	// Flags 指令附带的小段 JSON 元信息（例如 apply 时的 {"autoStart":true}）
 	Flags string `json:"flags,omitempty"`
+}
+
+// ManagedConfig 面板为该 Agent 保存的最近一次成功应用配置，用于本地文件缺失时恢复。
+type ManagedConfig struct {
+	TargetType    string `json:"targetType"`
+	TargetID      uint   `json:"targetId"`
+	Version       int    `json:"version"`
+	Content       string `json:"content"`
+	AutoStart     bool   `json:"autoStart"`
+	ManualStopped bool   `json:"manualStopped"`
 }
 
 // TargetState 单个托管对象（frps / frpc）的运行态

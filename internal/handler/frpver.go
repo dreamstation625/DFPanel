@@ -116,14 +116,14 @@ func (h *FrpHandler) LocalFrp(c *gin.Context) {
 	active := h.mgr.ActiveVersion()
 	cached := h.mgr.CachedVersions()
 	c.JSON(http.StatusOK, gin.H{
-		"expected":   expected,
-		"active":     active,
-		"cached":     cached,
-		"updatable":  expected != "" && active != "" && expected != active,
-		"outdated":   latestIsNewer(active, cached),
-		"serial":     "local",
+		"expected":    expected,
+		"active":      active,
+		"cached":      cached,
+		"updatable":   expected != "" && active != "" && expected != active,
+		"outdated":    latestIsNewer(active, cached),
+		"serial":      "local",
 		"displayName": "面板本机",
-		"instances":  countLocalTargets(),
+		"instances":   countLocalTargets(),
 	})
 }
 
@@ -207,7 +207,7 @@ func (h *FrpHandler) LocalFrpActivate(c *gin.Context) {
 	if _, err := h.mgr.Activate(version); err != nil {
 		h.restartLocal(servers, runningBefore)
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "切换 frps " + version + " 失败，已回退：" + err.Error(),
+			"error":  "切换 frps " + version + " 失败，已回退：" + err.Error(),
 			"active": h.mgr.ActiveVersion(),
 		})
 		return
@@ -312,8 +312,8 @@ func (h *FrpHandler) AgentFrp(c *gin.Context) {
 			message = res.Message
 			_ = database.DB.Model(&model.Agent{}).Where("id = ?", a.ID).
 				Updates(map[string]any{
-					"frp_installed_version": active,
-					"frp_cached_versions":   strings.Join(cached, ","),
+					"frp_installed_version":            active,
+					model.AgentFRPCachedVersionsColumn: strings.Join(cached, ","),
 				}).Error
 		}
 	}
@@ -502,7 +502,7 @@ func (h *FrpHandler) writeAgentResult(c *gin.Context, agentID uint, res dispatch
 		updates["frp_installed_version"] = res.FrpVersion
 	}
 	if len(res.FrpCached) > 0 {
-		updates["frp_cached_versions"] = strings.Join(res.FrpCached, ",")
+		updates[model.AgentFRPCachedVersionsColumn] = strings.Join(res.FrpCached, ",")
 	}
 	if res.OK && expect != "" {
 		updates["frp_version"] = expect

@@ -58,17 +58,40 @@ func (a *Agent) Run() error {
 		log.Printf("已注册到面板 %s（角色：%s，运行时：%s）", a.cfg.PanelURL, a.cfg.Roles, a.cfg.Runtime)
 	}
 
-	// 重启后自动恢复本机已托管的 frp 实例
+	configsSynced := false
+	// 配置文件丢失时，先从面板补回最近成功应用的快照，再按启动状态恢复实例。
+	if err := a.syncMissingConfigs(); err != nil {
+		log.Printf("从面板恢复缺失配置失败（将重试）：%v", err)
+	} else {
+		configsSynced = true
+	}
 	a.bootstrap()
 
 	backoff := time.Second
 	for {
+		if !configsSynced {
+			if err := a.syncMissingConfigs(); err != nil {
+				log.Printf("从面板恢复缺失配置失败（将重试）：%v", err)
+			} else {
+				configsSynced = true
+			}
+			// 即使个别配置恢复失败，也让本轮已恢复的实例按启动状态运行。
+			a.bootstrap()
+		}
 		conn, err := a.client.DialWS()
 		if err == nil {
 			log.Printf("长连接已建立：%s", a.cfg.PanelURL)
 			backoff = time.Second
+			// 配置接口暂时失败但长连接可用时，定时重连以重试恢复，避免一直等到 WS 自然断开。
+			var retryTimer *time.Timer
+			if !configsSynced {
+				retryTimer = time.AfterFunc(30*time.Second, func() { _ = conn.Close() })
+			}
 			if err := a.serveWS(conn); err != nil {
 				log.Printf("长连接中断：%v", err)
+			}
+			if retryTimer != nil {
+				retryTimer.Stop()
 			}
 		} else {
 			log.Printf("连接面板失败（%v），转为轮询模式", err)
@@ -212,6 +235,16 @@ func (a *Agent) handleCommand(cmd proto.CommandData) proto.ResultData {
 
 	case proto.CmdVersions:
 		return proto.ResultData{OK: true, Versions: a.listHistory(t), Running: a.controller(t).Running()}
+
+	case proto.CmdVersionConfig:
+		if cmd.Version <= 0 {
+			return proto.ResultData{Message: "版本号不合法"}
+		}
+		content, err := a.readHistory(t, cmd.Version)
+		if err != nil {
+			return proto.ResultData{Message: err.Error()}
+		}
+		return proto.ResultData{OK: true, Content: content}
 
 	case proto.CmdFrpActivate:
 		return a.handleFrpActivate(cmd)

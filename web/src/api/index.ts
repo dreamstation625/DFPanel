@@ -444,6 +444,8 @@ export interface ConfigVersionItem {
   current?: boolean
   /** Agent 本地是否保留该版本快照（可回滚） */
   onAgent?: boolean
+  /** 面板或在线 Agent 是否有该版本的配置快照 */
+  hasConfig?: boolean
 }
 
 /** 历史版本查询结果 */
@@ -479,6 +481,8 @@ export const nodeApi = {
   restart: (id: number) => request.post<unknown, ApplyResult>(`/nodes/${id}/restart`, null, { timeout: APPLY_TIMEOUT }),
   log: (id: number) => request.get<unknown, { content: string; running?: boolean }>(`/nodes/${id}/log`),
   versions: (id: number) => request.get<unknown, VersionsResult>(`/nodes/${id}/versions`),
+  versionConfig: (id: number, version: number) =>
+    request.get<unknown, { content: string }>(`/nodes/${id}/versions/${version}/config`),
   rollback: (id: number, version: number) =>
     request.post<unknown, ApplyResult>(`/nodes/${id}/rollback`, { version }, { timeout: APPLY_TIMEOUT }),
   installCommand: (id: number, os = 'linux', runtime = 'process') =>

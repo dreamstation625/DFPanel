@@ -1,10 +1,65 @@
 package agenthub
 
 import (
+	"path/filepath"
 	"testing"
 
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+
+	"dfpanel/internal/database"
+	"dfpanel/internal/model"
 	"dfpanel/internal/proto"
 )
+
+// WebSocket 和 HTTP 心跳都会调用 UpdateState；版本必须由此落库供两个列表展示。
+func TestUpdateStatePersistsFrpVersion(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "agent.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Agent{}); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousDB := database.DB
+	database.DB = db
+	t.Cleanup(func() {
+		database.DB = previousDB
+		_ = sqlDB.Close()
+	})
+
+	agent := model.Agent{Name: "测试 Agent", NodeKey: "test-key", Secret: "test-secret"}
+	if err := db.Create(&agent).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := New()
+	h.UpdateState(agent.ID, proto.HeartbeatData{
+		Runtime:    "docker",
+		FrpVersion: "0.71.0",
+		FrpCached:  []string{"0.71.0", "0.70.0"},
+	}, "127.0.0.1")
+
+	var saved model.Agent
+	if err := db.First(&saved, agent.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Runtime != "docker" || saved.FRPInstalledVersion != "0.71.0" || saved.FRPCachedVersions != "0.71.0,0.70.0" {
+		t.Fatalf("心跳版本未正确保存：runtime=%q active=%q cached=%q", saved.Runtime, saved.FRPInstalledVersion, saved.FRPCachedVersions)
+	}
+
+	// 短暂探测不到槽位时，保留上次确认的版本，避免页面误报未下发。
+	h.UpdateState(agent.ID, proto.HeartbeatData{Runtime: "docker"}, "127.0.0.1")
+	if err := db.First(&saved, agent.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.FRPInstalledVersion != "0.71.0" {
+		t.Fatalf("空版本心跳清掉了已知版本：%q", saved.FRPInstalledVersion)
+	}
+}
 
 // 启停指令的结果要立刻反映到状态缓存里，不能等下一次心跳（30 秒）
 func TestSetTargetRunning(t *testing.T) {
