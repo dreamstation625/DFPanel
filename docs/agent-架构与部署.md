@@ -164,6 +164,11 @@ volumes:
 Agent 会 `docker inspect` 自己这个容器，反查挂载映射（`/var/lib/dfpanel-agent` → `./dfpanel-agent-data`
 解析后的宿主绝对路径）自动完成翻译 —— 所以 compose 里用相对路径或命名卷都可以，不必写死宿主路径。
 
+**容器槽位用拷贝而不是软链**：process 运行时的槽位（`<binDir>/<kind>`）是软链，省空间；
+但 docker 运行时槽位要挂进容器，软链里写的是 Agent 视角的目标路径，宿主 daemon 解析不到
+（轻则挂载失败，重则按「源不存在」建出一个空目录）。所以 docker 下统一复制文件，
+并把版本写进容器槽位自己的落签 `<kind>-container-<os>-<arch>.version`。
+
 也可以显式指定（`DFPANEL_HOST_DATA_DIR`，优先级更高）：
 
 ```yaml

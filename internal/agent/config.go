@@ -274,3 +274,31 @@ func (c *Config) HostPath(p string) string {
 	}
 	return hostPathByMounts(p, cachedHostMounts())
 }
+
+// HostPathError 检查容器内路径到底能不能翻译成宿主路径。
+//
+// 翻译不了就别启动 frp 容器：挂载源是 Agent 视角的路径时，宿主上不存在，
+// docker 会按惯例把它建成一个空目录，最后报一句难懂的 is a directory。
+func (c *Config) HostPathError() error {
+	if c.Runtime != "docker" || !InContainer() {
+		return nil
+	}
+	return hostPathProblem(c.DataDir, c.HostDataDir, cachedHostMounts())
+}
+
+// hostPathProblem 纯函数版本，便于单测
+func hostPathProblem(dataDir, hostDataDir string, mounts map[string]string) error {
+	if hostDataDir != "" {
+		return nil
+	}
+	if len(mounts) == 0 {
+		return errors.New("Agent 自身跑在容器里，但既没配 DFPANEL_HOST_DATA_DIR，" +
+			"也没能反查到自己容器的挂载映射（docker inspect 失败，或容器名/hostname 不是 dfpanel-agent）：" +
+			"frp 容器挂载用的路径在宿主上不存在，docker 会把它建成空目录")
+	}
+	if hostPathByMounts(dataDir, mounts) == dataDir {
+		return fmt.Errorf("Agent 自身跑在容器里，但数据目录 %s 不在任何挂载点下，翻译不出宿主路径："+
+			"请把数据目录挂出来（如 ./dfpanel-agent-data:/var/lib/dfpanel-agent），或显式设置 DFPANEL_HOST_DATA_DIR", dataDir)
+	}
+	return nil
+}

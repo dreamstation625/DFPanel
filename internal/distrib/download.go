@@ -218,6 +218,50 @@ func EnsureFRPBinary(kind, version, goos, goarch, dir, base string) (string, err
 	return dest, nil
 }
 
+// CopyBinary 把版本化二进制复制到槽位，并把版本写进 sidecarPath（留空则不写）。
+//
+// docker 运行时必须走它：槽位会被 bind-mount 进 frp 容器，而挂载源是宿主路径，
+// 软链里写的是 Agent 视角的目标路径 —— 宿主 daemon 解析不到，轻则挂载失败，
+// 重则按「源不存在」建出一个空目录把容器搞挂。
+//
+// sidecarPath 由调用方给：容器槽位的落签文件与 process 槽位不是同一个
+// （<kind>-container-<os>-<arch>.version vs <kind>.version），传错就读不出生效版本。
+func CopyBinary(binDir, activePath, sidecarPath, kind, version, goos, goarch string) error {
+	if !ValidVersion(version) {
+		return fmt.Errorf("版本号格式不合法：%s", version)
+	}
+	src := filepath.Join(binDir, BinaryName(kind, version, goos, goarch))
+	fi, err := os.Stat(src)
+	if err != nil || fi.Size() == 0 {
+		return fmt.Errorf("版本 %s 的 %s 二进制尚未下载，请先执行下载", version, kind)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(activePath), 0o755); err != nil {
+		return err
+	}
+	// 先写 .new 再 rename：避免半截文件被进程读到，也顺手顶掉旧的软链
+	tmp := activePath + ".new"
+	if err := os.WriteFile(tmp, data, 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, activePath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Chmod(activePath, 0o755)
+
+	if sidecarPath == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(sidecarPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(sidecarPath, []byte(version+"\n"), 0o644)
+}
+
 // EnsureExecutable 确保二进制可执行（chmod 0755，跟随软链）。
 //
 // 手动拷进来的文件、以及落在 Windows/NAS 共享目录里的文件常常没有执行位；

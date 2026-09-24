@@ -212,21 +212,66 @@ func (a *Agent) ensureRuntimeBinary(kind string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if fi, statErr := os.Stat(slot); statErr == nil && fi.Size() > 0 {
+	if a.slotReady(slot) {
 		return false, nil
 	}
 	goos, goarch, err := a.frpPlatform()
 	if err != nil {
 		return false, err
 	}
-	_, resolved, err := a.ensureVersionedBinary(kind, a.cfg.FRPVersion)
+	// 槽位里已经有版本（只是形态不对，例如 process 时代留下的软链）时按它重做，
+	// 不要顺手把版本换成期望版本/latest
+	version := a.cfg.FRPVersion
+	if cur := a.slotVersion(kind); cur != "" {
+		version = cur
+	}
+	_, resolved, err := a.ensureVersionedBinary(kind, version)
 	if err != nil {
 		return false, fmt.Errorf("从面板获取 %s 二进制失败：%v", kind, err)
 	}
-	if _, err := distrib.ActivateBinary(a.cfg.BinDir(), slot, kind, resolved, goos, goarch); err != nil {
+	if err := a.activateSlot(kind, slot, resolved, goos, goarch); err != nil {
 		return false, fmt.Errorf("激活 %s %s 失败：%v", kind, resolved, err)
 	}
 	return true, nil
+}
+
+// slotsReady 所有启用角色的槽位都可用（形态也对）
+func (a *Agent) slotsReady(kinds []string) bool {
+	for _, kind := range kinds {
+		slot, err := a.slotPath(kind)
+		if err != nil || !a.slotReady(slot) {
+			return false
+		}
+	}
+	return true
+}
+
+// slotReady 槽位是否已经可用。
+//
+// docker 运行时额外要求它是普通文件：槽位会被 bind-mount 进 frp 容器，而软链里写的是
+// Agent 视角的目标路径，宿主的 docker daemon 解析不到（os.Stat 会跟随软链，光看 Stat 会误判成就绪）。
+func (a *Agent) slotReady(slot string) bool {
+	if a.cfg.Runtime == "docker" {
+		fi, err := os.Lstat(slot)
+		return err == nil && fi.Size() > 0 && fi.Mode()&os.ModeSymlink == 0
+	}
+	fi, err := os.Stat(slot)
+	return err == nil && fi.Size() > 0
+}
+
+// activateSlot 把指定版本切到槽位。
+//
+// process 运行时用软链（省空间，active 路径字面不变）；docker 运行时必须用拷贝 ——
+// 槽位会被 bind-mount 进 frp 容器，挂载源是宿主路径，软链里写的却是 Agent 视角的目标路径，
+// 宿主的 docker daemon 解析不到。
+func (a *Agent) activateSlot(kind, slot, version, goos, goarch string) error {
+	if a.cfg.Runtime == "docker" {
+		// 容器槽位有自己的版本落签，别用 process 那份（否则生效版本读不出来）
+		return distrib.CopyBinary(a.cfg.BinDir(), slot,
+			a.cfg.ContainerVersionSidecar(kind, goos, goarch), kind, version, goos, goarch)
+	}
+	_, err := distrib.ActivateBinary(a.cfg.BinDir(), slot, kind, version, goos, goarch)
+	return err
 }
 
 // handleFrpActivate 把指定版本切为 active 槽位，并重启该 Agent 上全部托管实例。
@@ -266,8 +311,9 @@ func (a *Agent) handleFrpActivate(cmd proto.CommandData) proto.ResultData {
 		_ = dest
 	}
 
-	// 版本没变化就别动：切换要停实例、换槽位再拉起，docker 运行时还要重建容器，白折腾一遍
-	if a.sameAsCurrent(kinds, concrete) {
+	// 版本没变化就别动：切换要停实例、换槽位再拉起，docker 运行时还要重建容器，白折腾一遍。
+	// 但槽位形态不对（docker 下是软链）时照样要走一遍，把它重做成拷贝。
+	if a.sameAsCurrent(kinds, concrete) && a.slotsReady(kinds) {
 		active, cached := a.frpStatus()
 		return proto.ResultData{
 			OK:         true,
@@ -308,7 +354,7 @@ func (a *Agent) handleFrpActivate(cmd proto.CommandData) proto.ResultData {
 	// 2. 切换 active 槽位（停掉后重建控制器，避免持有旧的挂载/路径）
 	a.resetControllers()
 	for _, kind := range kinds {
-		if _, err := distrib.ActivateBinary(a.cfg.BinDir(), slots[kind], kind, concrete, pgoos, pgoarch); err != nil {
+		if err := a.activateSlot(kind, slots[kind], concrete, pgoos, pgoarch); err != nil {
 			a.restoreActive(oldVersions, slots, kinds, pgoos, pgoarch)
 			a.restartTargets(targets, runningBefore)
 			return proto.ResultData{
@@ -440,7 +486,7 @@ func (a *Agent) restoreActive(oldVersions, slots map[string]string, kinds []stri
 			}
 			continue
 		}
-		if _, err := distrib.ActivateBinary(a.cfg.BinDir(), slot, kind, old, goos, goarch); err != nil {
+		if err := a.activateSlot(kind, slot, old, goos, goarch); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", kind, err))
 		}
 	}

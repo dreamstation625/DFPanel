@@ -356,9 +356,8 @@ func (a *Agent) controller(t Target) *Controller {
 		// 挂载由宿主的 docker daemon 执行，源路径要用宿主视角那一份；
 		// 而「文件在不在」只能按 Agent 自己看得见的路径判断（Agent 在容器里时两者不同）。
 		spec.ConfigSource = a.cfg.HostPath(spec.ConfigPath)
-		if a.cfg.HostDataDir == "" && InContainer() {
-			spec.PathErr = "Agent 自身跑在容器里，但没有配置宿主机数据目录（DFPANEL_HOST_DATA_DIR）：" +
-				"frp 容器挂载用的路径在宿主上不存在，docker 会把它建成空目录。请用面板给出的安装命令重新安装 Agent"
+		if err := a.cfg.HostPathError(); err != nil {
+			spec.PathErr = err.Error()
 		}
 		cos, carch, err := containerPlatform()
 		switch {

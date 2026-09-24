@@ -76,6 +76,31 @@ func TestDockerRunArgsUsesHostSources(t *testing.T) {
 	}
 }
 
+// 容器内路径能不能翻译成宿主路径：显式配置优先，其次靠反查到的挂载映射，
+// 两条都走不通才拦（否则 docker 会把挂载源建成空目录）
+func TestHostPathProblem(t *testing.T) {
+	const dataDir = "/var/lib/dfpanel-agent"
+	mounts := map[string]string{"/var/lib/dfpanel-agent": "/home/me/agent-data"}
+
+	if err := hostPathProblem(dataDir, "/opt/dfpanel-agent", nil); err != nil {
+		t.Fatalf("显式配置了宿主目录应当放行：%v", err)
+	}
+	if err := hostPathProblem(dataDir, "", mounts); err != nil {
+		t.Fatalf("反查到挂载映射应当放行：%v", err)
+	}
+
+	err := hostPathProblem(dataDir, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "DFPANEL_HOST_DATA_DIR") {
+		t.Fatalf("既没配置也反查不到时应当报错并提示环境变量，实际：%v", err)
+	}
+
+	// 反查到了挂载映射，但数据目录不在其中：也要说清楚，别放过去让 docker 建空目录
+	err = hostPathProblem(dataDir, "", map[string]string{"/var/run/docker.sock": "/var/run/docker.sock"})
+	if err == nil || !strings.Contains(err.Error(), dataDir) {
+		t.Fatalf("数据目录不在挂载点下时应当报错，实际：%v", err)
+	}
+}
+
 // 没有可挂载的二进制时，纯函数不注入 --entrypoint（真正的拦截在 requireDockerReady，
 // 见 TestRequireDockerReady）
 func TestDockerRunArgsWithoutMountedBinary(t *testing.T) {
