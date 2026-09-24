@@ -19,26 +19,18 @@ type Spec struct {
 	Runtime string // process / docker
 	BinPath string
 	Image   string
-	// ConfigPath 配置文件的路径：Agent 自己读写用它，同时也是容器内的挂载目标
-	ConfigPath string
-	// ConfigSource 传给 docker 的配置挂载源（宿主机路径）。Agent 直装在宿主上时留空，
-	// 与 ConfigPath 相同；Agent 自身跑在容器里时是另一条路径。
-	ConfigSource  string
+	// ConfigPath 配置文件的路径：Agent 自己读写用它，docker 运行时会被拷进容器
+	ConfigPath    string
 	LogPath       string
 	// PidPath 子进程 pid 文件：Agent 重启后据此接管仍在运行的实例（docker 运行时不用）
 	PidPath       string
 	ContainerName string
-	// MountBinary docker 运行时专用：由面板下发的 frp 二进制，挂进容器并覆盖 entrypoint。
-	// 这是 Agent 视角的路径（「文件在不在」按它判断）；底座镜像里没有 frp，
-	// 所以它必须存在 —— 缺失时容器直接起不来（见 requireDockerReady）。
+	// MountBinary docker 运行时专用：由面板下发的 frp 二进制（Agent 视角的本地路径）。
+	// 底座镜像里没有 frp，它必须存在 —— 启动时用 docker cp 拷进容器并覆盖 entrypoint。
 	MountBinary string
-	// MountSource 传给 docker 的挂载源（宿主机路径）。Agent 直装在宿主上时留空，与 MountBinary 相同。
-	MountSource string
 	// MountErr 拿不到 MountBinary 的原因（docker 不可用 / 容器平台不支持 / 槽位尚未就绪），
 	// 用于把「为什么起不来」讲清楚，而不是笼统报一句缺文件。
 	MountErr string
-	// PathErr 挂载路径本身不可用的原因（Agent 在容器里却没配宿主数据目录）
-	PathErr string
 }
 
 // fileReady 文件存在且非空（0 字节的槽位文件视为没有）
@@ -50,18 +42,13 @@ func fileReady(path string) bool {
 	return err == nil && fi.Size() > 0
 }
 
-// requireDockerReady 容器运行时的启动前校验：路径可用 + 面板下发的二进制已就位。
+// requireDockerReady 容器运行时的启动前校验：面板下发的二进制必须已经在本机就位。
 //
 // 底座镜像（alpine 之类）不含 frp，没有第二条退路：缺了就是起不来，
 // 要的是在面板上直接看到「先去设置页下载」，而不是静默跑起一个版本不明的 frp。
-// 路径这一项则是给「Agent 自己跑在容器里」兜的：那时它手里的路径宿主看不到，
-// 直接 bind-mount 会被 docker 建出一个空目录，报错却是一句难懂的 is a directory。
 func requireDockerReady(spec Spec) error {
 	if spec.Runtime != "docker" {
 		return nil
-	}
-	if spec.PathErr != "" {
-		return fmt.Errorf("%s 容器无法启动：%s", spec.Kind, spec.PathErr)
 	}
 	if spec.MountErr != "" {
 		return fmt.Errorf("%s 容器无法启动：%s", spec.Kind, spec.MountErr)
@@ -165,12 +152,12 @@ func (c *Controller) startProcess() error {
 }
 
 func (c *Controller) startDocker() error {
-	// 底座镜像里没有 frp，路径与二进制都得先过关
+	// 底座镜像里没有 frp，二进制得先就位
 	if err := requireDockerReady(c.spec); err != nil {
 		return err
 	}
 
-	// 容器不可变：每次启动前移除旧容器，保证使用新配置
+	// 容器不可变：每次启动前移除旧容器，保证用上新的配置与二进制
 	_ = exec.Command("docker", "rm", "-f", c.spec.ContainerName).Run()
 
 	image := c.spec.Image
@@ -178,52 +165,44 @@ func (c *Controller) startDocker() error {
 		image = DefaultFrpcImage
 	}
 	// --network host 仅 Linux 支持，Windows / macOS 退化为默认网络
-	args := dockerRunArgs(c.spec, image, runtime.GOOS == "linux")
+	args := dockerCreateArgs(c.spec, image, runtime.GOOS == "linux")
+	if out, err := exec.Command("docker", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("创建 %s 容器失败：%v，输出：%s", c.spec.Kind, err, strings.TrimSpace(string(out)))
+	}
 
-	out, err := exec.Command("docker", args...).CombinedOutput()
-	if err != nil {
+	// 二进制与配置用 docker cp 送进去：走 daemon 传输，不要求宿主机看得到这些文件，
+	// 于是 Agent 装在宿主上还是跑在容器里都成立（bind-mount 就得宿主路径，很容易踩空）
+	for _, f := range []struct{ src, dst, label string }{
+		{c.spec.MountBinary, ContainerBinaryInContainer(c.spec.Kind), c.spec.Kind + " 二进制"},
+		{c.spec.ConfigPath, ContainerConfigPath, "配置"},
+	} {
+		out, err := exec.Command("docker", "cp", f.src, c.spec.ContainerName+":"+f.dst).CombinedOutput()
+		if err != nil {
+			_ = exec.Command("docker", "rm", "-f", c.spec.ContainerName).Run()
+			return fmt.Errorf("把 %s 拷进容器失败：%v，输出：%s", f.label, err, strings.TrimSpace(string(out)))
+		}
+	}
+
+	if out, err := exec.Command("docker", "start", c.spec.ContainerName).CombinedOutput(); err != nil {
 		return fmt.Errorf("启动 %s 容器失败：%v，输出：%s", c.spec.Kind, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-// dockerRunArgs 构造 frp 容器的 docker run 参数。
+// dockerCreateArgs 构造 frp 容器的 docker create 参数。
 //
 // 拆成纯函数是为了能在没有 docker 的环境下单测校验参数顺序
 // （--entrypoint 必须位于镜像名之前，`-c 配置` 必须位于镜像名之后）。
 //
-// frp 二进制由面板下发：把宿主机上的文件挂进容器，并显式覆盖 entrypoint 指到它。
-// 不猜镜像里的二进制路径，因此对任意底座镜像都成立；底座里没有 frp，
-// 所以这一步不是「可选增强」，缺失时 startDocker 会先行拒绝。
-//
-// 注意「源」与「目标」不是一回事：挂载源必须是宿主机路径（Source 字段），
-// 而容器内的挂载目标沿用 Agent 自己的路径（Agent 在容器里时两者不同）。
-func dockerRunArgs(spec Spec, image string, hostNetwork bool) []string {
-	cfgSrc := spec.ConfigSource
-	if cfgSrc == "" {
-		cfgSrc = spec.ConfigPath
-	}
-	args := []string{"run", "-d", "--name", spec.ContainerName, "--restart", "unless-stopped",
-		"-v", fmt.Sprintf("%s:%s:ro", cfgSrc, spec.ConfigPath)}
+// 刻意不挂载任何文件：底座镜像里没有 frp，二进制与配置都在 create 之后用 docker cp 拷进去，
+// 因此容器内用的是固定路径（见 ContainerBinaryInContainer / ContainerConfigPath）。
+func dockerCreateArgs(spec Spec, image string, hostNetwork bool) []string {
+	args := []string{"create", "--name", spec.ContainerName, "--restart", "unless-stopped"}
 	if hostNetwork {
 		args = append(args, "--network", "host")
 	}
-
-	entrypoint := ""
-	if fi, err := os.Stat(spec.MountBinary); err == nil && fi.Size() > 0 {
-		mountSrc := spec.MountSource
-		if mountSrc == "" {
-			mountSrc = spec.MountBinary
-		}
-		inContainer := ContainerBinaryInContainer(spec.Kind)
-		args = append(args, "-v", fmt.Sprintf("%s:%s:ro", mountSrc, inContainer))
-		entrypoint = inContainer
-	}
-	if entrypoint != "" {
-		args = append(args, "--entrypoint", entrypoint)
-	}
-
-	return append(args, image, "-c", spec.ConfigPath)
+	args = append(args, "--entrypoint", ContainerBinaryInContainer(spec.Kind))
+	return append(args, image, "-c", ContainerConfigPath)
 }
 
 // Adopt 尝试接管上一个 Agent 进程留下的实例。

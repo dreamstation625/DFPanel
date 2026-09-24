@@ -98,8 +98,8 @@ func TestInstallCommandsCarryFrpVersion(t *testing.T) {
 	if !strings.Contains(res.Compose, "./dfpanel-agent-data:/var/lib/dfpanel-agent") {
 		t.Errorf("compose 的数据目录应挂当前目录下的相对路径：%s", res.Compose)
 	}
-	if strings.Contains(res.Compose, "      DFPANEL_HOST_DATA_DIR:") {
-		t.Errorf("compose 不该写死宿主数据目录（由 Agent 反查挂载映射）：%s", res.Compose)
+	if strings.Contains(res.Compose, "DFPANEL_HOST_DATA_DIR") {
+		t.Errorf("compose 不该出现宿主数据目录（容器内的文件用 docker cp 送）：%s", res.Compose)
 	}
 
 	winRes := h.buildInstallCommands("http://panel:7226", a, "windows", "process")

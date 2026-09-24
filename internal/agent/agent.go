@@ -352,13 +352,8 @@ func (a *Agent) controller(t Target) *Controller {
 		ContainerName: ContainerName(kind, t.ID),
 	}
 	if a.cfg.Runtime == "docker" {
-		// 容器底座里没有 frp：必须挂上面板下发的二进制才起得来。
-		// 挂载由宿主的 docker daemon 执行，源路径要用宿主视角那一份；
-		// 而「文件在不在」只能按 Agent 自己看得见的路径判断（Agent 在容器里时两者不同）。
-		spec.ConfigSource = a.cfg.HostPath(spec.ConfigPath)
-		if err := a.cfg.HostPathError(); err != nil {
-			spec.PathErr = err.Error()
-		}
+		// 容器底座里没有 frp：必须拿到面板下发的二进制才起得来（启动时用 docker cp 拷进容器）。
+		// 槽位没就绪（面板还没下发过、或 docker 不可用）时记下原因，启动那一步会直接拒绝。
 		cos, carch, err := containerPlatform()
 		switch {
 		case err != nil:
@@ -367,7 +362,6 @@ func (a *Agent) controller(t Target) *Controller {
 			slot := a.cfg.ContainerSlotPath(kind, cos, carch)
 			if fileReady(slot) {
 				spec.MountBinary = slot
-				spec.MountSource = a.cfg.HostPath(slot)
 			} else {
 				spec.MountErr = fmt.Sprintf("容器槽位 %s 还没有二进制，%s 尚未由面板下发", slot, kind)
 			}

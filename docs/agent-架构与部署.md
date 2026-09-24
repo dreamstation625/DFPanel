@@ -151,8 +151,7 @@ Agent 支持两种运行时，`DFPANEL_RUNTIME` 控制，对 frps 与 frpc 分�
 | `docker` | Agent 用 docker CLI 起容器（挂载下发的配置与 frp 二进制、覆盖 entrypoint、host 网络、按容器状态做健康检查） | 希望隧道进程独立隔离、统一镜像管理 |
 
 `runtime=docker` 时需要给 Agent 挂载 `/var/run/docker.sock`（镜像已内置 docker-cli），
-并且**数据目录要落在宿主的真实路径上**（不能是容器里的私有路径）—— frp 容器要 bind-mount
-Agent 容器里的配置与二进制，宿主机的 docker daemon 必须能直接看到这些文件：
+外加一个**持久的数据目录**（配置与 frp 二进制存这里，容器重建后不用重新下发）：
 
 ```yaml
 volumes:
@@ -160,27 +159,19 @@ volumes:
   - /var/run/docker.sock:/var/run/docker.sock
 ```
 
-**宿主路径从哪来**：frp 容器由**宿主机的 docker daemon** 创建，bind-mount 的源必须是宿主路径。
-Agent 会 `docker inspect` 自己这个容器，反查挂载映射（`/var/lib/dfpanel-agent` → `./dfpanel-agent-data`
-解析后的宿主绝对路径）自动完成翻译 —— 所以 compose 里用相对路径或命名卷都可以，不必写死宿主路径。
+**不 bind-mount，改用 `docker cp`**：Agent 先 `docker create` 起壳，再把 frp 二进制与配置
+`docker cp` 进容器（容器内固定路径 `/dfpanel-frpc`、`/dfpanel-frpc.json`），最后 `docker start`。
+
+早先的做法是把这两个文件从宿主 bind-mount 进容器，但挂载源必须是**宿主**能看到的路径，
+于是「Agent 自己跑在容器里」时就有一堆坑：容器内路径在宿主上不存在，docker 会按惯例
+**建出一个同名空目录**再挂进去，报错是 `exec: "/dfpanel-frpc": is a directory`；
+compose 写相对路径时宿主的绝对路径又只有 daemon 知道，配置里根本写不出来。
+`docker cp` 走 daemon 传输，不需要宿主路径，上述问题全部消失（daemon 在远端也一样成立）。
 
 **容器槽位用拷贝而不是软链**：process 运行时的槽位（`<binDir>/<kind>`）是软链，省空间；
-但 docker 运行时槽位要挂进容器，软链里写的是 Agent 视角的目标路径，宿主 daemon 解析不到
-（轻则挂载失败，重则按「源不存在」建出一个空目录）。所以 docker 下统一复制文件，
-并把版本写进容器槽位自己的落签 `<kind>-container-<os>-<arch>.version`。
-
-也可以显式指定（`DFPANEL_HOST_DATA_DIR`，优先级更高）：
-
-```yaml
-environment:
-  DFPANEL_HOST_DATA_DIR: /opt/dfpanel-agent
-```
-
-反查不到又没配（例如自定义了 hostname）时，Agent 会直接拒绝启动容器并说明原因；
-否则它会把自己看到的容器内路径丢给 docker，而宿主上并没有这个路径 —— docker 会按惯例
-**建出一个同名空目录**再挂进去，容器里的报错是 `exec: "/dfpanel-frpc": is a directory`，很难看出真实原因。
-
-之前踩过这个坑的话，宿主上可能已经留下一批同名空目录（如 `/var/lib/dfpanel-agent/bin/`），需要手动删掉。
+但 docker 运行时的槽位会被 `docker cp` 送进容器 —— 送软链等于送一个指向容器内路径的链，
+没用。所以 docker 下统一复制文件，并把版本写进容器槽位自己的落签
+`<kind>-container-<os>-<arch>.version`（与 process 槽位的 `<kind>.version` 分开）。
 
 回滚逻辑与 process 运行时完全一致：容器起不来 / 连不上服务端 → 还原配置 → 重建容器。
 

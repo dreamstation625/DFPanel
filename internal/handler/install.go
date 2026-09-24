@@ -264,8 +264,6 @@ func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime, image
 	}
 	if runtime == "docker" {
 		lines = append(lines,
-			// Agent 在容器里、frp 容器由宿主创建：告诉它挂载路径该用宿主上的哪一份
-			"  -e DFPANEL_HOST_DATA_DIR="+agentDataHostDir+" \\",
 			"  -v "+agentDataHostDir+":/var/lib/dfpanel-agent \\",
 			"  -v /var/run/docker.sock:/var/run/docker.sock \\")
 	} else {
@@ -283,8 +281,8 @@ func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, i
 	tail := "\nvolumes:\n  dfpanel-agent-data:\n"
 	if runtime == "docker" {
 		// 数据目录落在当前目录下（compose 的相对路径按 compose 文件所在目录解析）：
-		// frp 容器要 bind-mount 这里的配置与二进制，宿主的 docker daemon 得直接看得到。
-		// 宿主上的绝对路径由 Agent 反查自己的挂载映射得到，不必写死在配置里。
+		// 配置与 frp 二进制都存这里，容器重建后不用重新下发。
+		// frp 容器的文件由 docker cp 送入，不需要宿主路径，所以相对路径怎么写都行。
 		volumes = "      - ./dfpanel-agent-data:/var/lib/dfpanel-agent\n" +
 			"      - /var/run/docker.sock:/var/run/docker.sock\n"
 		tail = ""
@@ -292,10 +290,6 @@ func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, i
 	versionLine := ""
 	if ver := frpVersionArg(agent); ver != "" {
 		versionLine = "      DFPANEL_FRPVERSION: " + ver + "\n"
-	}
-	if runtime == "docker" {
-		versionLine += "      # 反查不到挂载映射时（例如自定义了 hostname），把宿主上的绝对路径填这里\n" +
-			"      # DFPANEL_HOST_DATA_DIR: " + agentDataHostDir + "\n"
 	}
 	return fmt.Sprintf(`services:
   dfpanel-agent:

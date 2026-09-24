@@ -22,13 +22,7 @@ type Config struct {
 	Roles      string `json:"roles"`     // 逗号分隔：frps / frpc，两者可并存
 	Runtime    string `json:"runtime"`   // process = 直接起进程；docker = 起容器
 	DataDir    string `json:"data_dir"` // 配置与日志目录
-	// HostDataDir 宿主机上的数据目录，仅 runtime=docker 且 Agent 自身在容器里时需要。
-	//
-	// frp 容器由宿主机 docker daemon 创建，bind-mount 的源路径必须是宿主路径：
-	// 容器里的 /var/lib/dfpanel-agent 在宿主上不存在，直接挂会让 docker 建出一个空目录，
-	// 容器里就变成 exec "/dfpanel-frpc": is a directory。
-	HostDataDir string `json:"host_data_dir"`
-	FRPVersion  string `json:"frp_version"`
+	FRPVersion string `json:"frp_version"`
 	// 容器化运行时使用的镜像，留空取默认值
 	FrpsImage string `json:"frps_image"`
 	FrpcImage string `json:"frpc_image"`
@@ -63,7 +57,6 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.Roles = envOr("DFPANEL_ROLES", cfg.Roles)
 	cfg.Runtime = envOr("DFPANEL_RUNTIME", cfg.Runtime)
 	cfg.DataDir = envOr("DFPANEL_DATA_DIR", cfg.DataDir)
-	cfg.HostDataDir = envOr("DFPANEL_HOST_DATA_DIR", cfg.HostDataDir)
 	cfg.FRPVersion = envOr("DFPANEL_FRPVERSION", cfg.FRPVersion)
 	cfg.FrpsImage = envOr("DFPANEL_FRPS_IMAGE", cfg.FrpsImage)
 	cfg.FrpcImage = envOr("DFPANEL_FRPC_IMAGE", cfg.FrpcImage)
@@ -256,49 +249,7 @@ func ContainerName(kind string, id uint) string {
 	return fmt.Sprintf("dfpanel-%s-%d", kind, id)
 }
 
-// HostPath 把「Agent 自己看到的路径」翻译成宿主机路径。
+// ContainerConfigPath frp 容器内的配置文件路径。
 //
-// runtime=docker 时 frp 容器由宿主的 docker daemon 创建，bind-mount 的源路径必须是宿主路径：
-//   - 配了 HostDataDir：按 DataDir → HostDataDir 换算（Agent 直装在宿主上时它为空，原样返回）
-//   - 没配：反查自己这个容器的挂载映射 —— compose 里写相对路径（./agent-data）或命名卷时，
-//     宿主的绝对路径只有 daemon 知道，配置里写不出来
-func (c *Config) HostPath(p string) string {
-	if p == "" {
-		return p
-	}
-	if c.HostDataDir != "" {
-		return rewritePrefix(p, c.DataDir, c.HostDataDir)
-	}
-	if c.Runtime != "docker" || !InContainer() {
-		return p
-	}
-	return hostPathByMounts(p, cachedHostMounts())
-}
-
-// HostPathError 检查容器内路径到底能不能翻译成宿主路径。
-//
-// 翻译不了就别启动 frp 容器：挂载源是 Agent 视角的路径时，宿主上不存在，
-// docker 会按惯例把它建成一个空目录，最后报一句难懂的 is a directory。
-func (c *Config) HostPathError() error {
-	if c.Runtime != "docker" || !InContainer() {
-		return nil
-	}
-	return hostPathProblem(c.DataDir, c.HostDataDir, cachedHostMounts())
-}
-
-// hostPathProblem 纯函数版本，便于单测
-func hostPathProblem(dataDir, hostDataDir string, mounts map[string]string) error {
-	if hostDataDir != "" {
-		return nil
-	}
-	if len(mounts) == 0 {
-		return errors.New("Agent 自身跑在容器里，但既没配 DFPANEL_HOST_DATA_DIR，" +
-			"也没能反查到自己容器的挂载映射（docker inspect 失败，或容器名/hostname 不是 dfpanel-agent）：" +
-			"frp 容器挂载用的路径在宿主上不存在，docker 会把它建成空目录")
-	}
-	if hostPathByMounts(dataDir, mounts) == dataDir {
-		return fmt.Errorf("Agent 自身跑在容器里，但数据目录 %s 不在任何挂载点下，翻译不出宿主路径："+
-			"请把数据目录挂出来（如 ./dfpanel-agent-data:/var/lib/dfpanel-agent），或显式设置 DFPANEL_HOST_DATA_DIR", dataDir)
-	}
-	return nil
-}
+// 固定用单层路径：配置由 docker cp 拷进去，不依赖镜像里存在多级目录。
+const ContainerConfigPath = "/dfpanel-frpc.json"
