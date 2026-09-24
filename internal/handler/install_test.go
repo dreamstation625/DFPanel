@@ -94,6 +94,13 @@ func TestInstallCommandsCarryFrpVersion(t *testing.T) {
 	if !strings.Contains(res.Compose, "DFPANEL_FRPVERSION: 0.71.0") {
 		t.Errorf("compose 片段应带上版本：%s", res.Compose)
 	}
+	// docker 运行时的数据目录用当前目录（相对 compose 文件），不用写死的 /opt/...
+	if !strings.Contains(res.Compose, "./dfpanel-agent-data:/var/lib/dfpanel-agent") {
+		t.Errorf("compose 的数据目录应挂当前目录下的相对路径：%s", res.Compose)
+	}
+	if strings.Contains(res.Compose, "      DFPANEL_HOST_DATA_DIR:") {
+		t.Errorf("compose 不该写死宿主数据目录（由 Agent 反查挂载映射）：%s", res.Compose)
+	}
 
 	winRes := h.buildInstallCommands("http://panel:7226", a, "windows", "process")
 	if !strings.Contains(winRes.Binary, "-FrpVersion 0.71.0") {

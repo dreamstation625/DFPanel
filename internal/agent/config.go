@@ -258,16 +258,19 @@ func ContainerName(kind string, id uint) string {
 
 // HostPath 把「Agent 自己看到的路径」翻译成宿主机路径。
 //
-// 只有 runtime=docker 且 Agent 自身跑在容器里时才需要：frp 容器由宿主 docker daemon 创建，
-// bind-mount 的源路径得是宿主路径。HostDataDir 为空（Agent 直装在宿主上）时原样返回。
+// runtime=docker 时 frp 容器由宿主的 docker daemon 创建，bind-mount 的源路径必须是宿主路径：
+//   - 配了 HostDataDir：按 DataDir → HostDataDir 换算（Agent 直装在宿主上时它为空，原样返回）
+//   - 没配：反查自己这个容器的挂载映射 —— compose 里写相对路径（./agent-data）或命名卷时，
+//     宿主的绝对路径只有 daemon 知道，配置里写不出来
 func (c *Config) HostPath(p string) string {
-	if c.HostDataDir == "" || p == "" {
+	if p == "" {
 		return p
 	}
-	rel, err := filepath.Rel(c.DataDir, p)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		// 不在数据目录下：没法翻译，原样返回（例如用户自己指定的其它挂载点）
+	if c.HostDataDir != "" {
+		return rewritePrefix(p, c.DataDir, c.HostDataDir)
+	}
+	if c.Runtime != "docker" || !InContainer() {
 		return p
 	}
-	return filepath.Join(c.HostDataDir, rel)
+	return hostPathByMounts(p, cachedHostMounts())
 }

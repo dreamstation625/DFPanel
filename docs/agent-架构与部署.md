@@ -151,23 +151,29 @@ Agent 支持两种运行时，`DFPANEL_RUNTIME` 控制，对 frps 与 frpc 分�
 | `docker` | Agent 用 docker CLI 起容器（挂载下发的配置与 frp 二进制、覆盖 entrypoint、host 网络、按容器状态做健康检查） | 希望隧道进程独立隔离、统一镜像管理 |
 
 `runtime=docker` 时需要给 Agent 挂载 `/var/run/docker.sock`（镜像已内置 docker-cli），
-并且**数据目录要用宿主机路径而不是命名卷** —— frp 容器要 bind-mount Agent 容器里的配置与二进制，
-宿主机的 docker daemon 必须能直接看到这些文件：
+并且**数据目录要落在宿主的真实路径上**（不能是容器里的私有路径）—— frp 容器要 bind-mount
+Agent 容器里的配置与二进制，宿主机的 docker daemon 必须能直接看到这些文件：
 
 ```yaml
 volumes:
-  - /opt/dfpanel-agent:/var/lib/dfpanel-agent
+  - ./dfpanel-agent-data:/var/lib/dfpanel-agent   # 相对 compose 文件所在目录
   - /var/run/docker.sock:/var/run/docker.sock
+```
+
+**宿主路径从哪来**：frp 容器由**宿主机的 docker daemon** 创建，bind-mount 的源必须是宿主路径。
+Agent 会 `docker inspect` 自己这个容器，反查挂载映射（`/var/lib/dfpanel-agent` → `./dfpanel-agent-data`
+解析后的宿主绝对路径）自动完成翻译 —— 所以 compose 里用相对路径或命名卷都可以，不必写死宿主路径。
+
+也可以显式指定（`DFPANEL_HOST_DATA_DIR`，优先级更高）：
+
+```yaml
 environment:
-  # Agent 在容器里、frp 容器由宿主创建：挂载路径要用宿主上的那一份
   DFPANEL_HOST_DATA_DIR: /opt/dfpanel-agent
 ```
 
-`DFPANEL_HOST_DATA_DIR` 是给「Agent 自己跑在容器里」用的：frp 容器由**宿主机的 docker daemon** 创建，
-bind-mount 的源路径必须是宿主路径。缺了这个配置，Agent 会把容器内路径（`/var/lib/dfpanel-agent/...`）
-直接丢给 docker，而宿主上并没有这个路径 —— docker 会按惯例**建出一个同名空目录**再挂进去，
-容器里的报错是 `exec: "/dfpanel-frpc": is a directory`，很难看出真实原因。
-Agent 检测到自己跑在容器里又没有该配置时，会直接拒绝启动容器并说明原因。
+反查不到又没配（例如自定义了 hostname）时，Agent 会直接拒绝启动容器并说明原因；
+否则它会把自己看到的容器内路径丢给 docker，而宿主上并没有这个路径 —— docker 会按惯例
+**建出一个同名空目录**再挂进去，容器里的报错是 `exec: "/dfpanel-frpc": is a directory`，很难看出真实原因。
 
 之前踩过这个坑的话，宿主上可能已经留下一批同名空目录（如 `/var/lib/dfpanel-agent/bin/`），需要手动删掉。
 

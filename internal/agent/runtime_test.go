@@ -17,6 +17,32 @@ func indexOf(list []string, want string) int {
 	return -1
 }
 
+// compose 用相对路径（./agent-data）或命名卷时，宿主绝对路径只有 daemon 知道：
+// 靠反查自己的挂载映射翻译，取匹配最长的那个前缀
+func TestHostPathByMounts(t *testing.T) {
+	mounts := map[string]string{
+		"/var/run/docker.sock":      "/var/run/docker.sock",
+		"/var/lib/dfpanel-agent":    "/home/me/dfpanel/agent-data",
+		"/var/lib/dfpanel-agent/bin": "/home/me/dfpanel/agent-data/bin",
+	}
+	if got, want := hostPathByMounts("/var/lib/dfpanel-agent/frpc-1.json", mounts),
+		filepath.Join("/home/me/dfpanel/agent-data", "frpc-1.json"); got != want {
+		t.Fatalf("应翻译成宿主路径，期望 %s，实际 %s", want, got)
+	}
+	// 更长的前缀优先（两个挂载点嵌套时不能挑错）
+	if got, want := hostPathByMounts("/var/lib/dfpanel-agent/bin/frpc-container-linux-amd64", mounts),
+		filepath.Join("/home/me/dfpanel/agent-data/bin", "frpc-container-linux-amd64"); got != want {
+		t.Fatalf("应命中更长的挂载点，期望 %s，实际 %s", want, got)
+	}
+	if got := hostPathByMounts("/tmp/elsewhere", mounts); got != "/tmp/elsewhere" {
+		t.Fatalf("匹配不上时应原样返回，实际 %s", got)
+	}
+	// 前缀相同但不同层级（/var/lib/dfpanel-agent-x 不属于 /var/lib/dfpanel-agent）
+	if got := hostPathByMounts("/var/lib/dfpanel-agent-x/f", mounts); got != "/var/lib/dfpanel-agent-x/f" {
+		t.Fatalf("同名前缀的兄弟目录不该被翻译，实际 %s", got)
+	}
+}
+
 // Agent 自己跑在容器里：挂载源用宿主路径，挂载目标与 -c 仍是 Agent 视角的路径
 func TestDockerRunArgsUsesHostSources(t *testing.T) {
 	dir := t.TempDir()
