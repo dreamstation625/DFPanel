@@ -353,9 +353,9 @@ func (a *Agent) controller(t Target) *Controller {
 	}
 	if a.cfg.Runtime == "docker" {
 		// 容器底座里没有 frp：必须挂上面板下发的二进制才起得来。
-		// 挂载是由宿主 docker daemon 做的，所以路径要用宿主视角的那一份
-		// （Agent 自己跑在容器里时，DataDir 与宿主目录不是同一个路径）。
-		spec.ConfigPath = a.cfg.HostPath(spec.ConfigPath)
+		// 挂载由宿主的 docker daemon 执行，源路径要用宿主视角那一份；
+		// 而「文件在不在」只能按 Agent 自己看得见的路径判断（Agent 在容器里时两者不同）。
+		spec.ConfigSource = a.cfg.HostPath(spec.ConfigPath)
 		if a.cfg.HostDataDir == "" && InContainer() {
 			spec.PathErr = "Agent 自身跑在容器里，但没有配置宿主机数据目录（DFPANEL_HOST_DATA_DIR）：" +
 				"frp 容器挂载用的路径在宿主上不存在，docker 会把它建成空目录。请用面板给出的安装命令重新安装 Agent"
@@ -367,7 +367,8 @@ func (a *Agent) controller(t Target) *Controller {
 		default:
 			slot := a.cfg.ContainerSlotPath(kind, cos, carch)
 			if fileReady(slot) {
-				spec.MountBinary = a.cfg.HostPath(slot)
+				spec.MountBinary = slot
+				spec.MountSource = a.cfg.HostPath(slot)
 			} else {
 				spec.MountErr = fmt.Sprintf("容器槽位 %s 还没有二进制，%s 尚未由面板下发", slot, kind)
 			}

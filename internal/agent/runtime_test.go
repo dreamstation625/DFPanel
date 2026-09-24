@@ -17,8 +17,41 @@ func indexOf(list []string, want string) int {
 	return -1
 }
 
-// 没有可挂载的二进制时，纯函数不注入 --entrypoint（真正的拦截在 requireMountedBinary，
-// 见 TestRequireMountedBinary）
+// Agent 自己跑在容器里：挂载源用宿主路径，挂载目标与 -c 仍是 Agent 视角的路径
+func TestDockerRunArgsUsesHostSources(t *testing.T) {
+	dir := t.TempDir()
+	slot := filepath.Join(dir, "frpc-container-linux-amd64")
+	if err := os.WriteFile(slot, []byte("fake-frpc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := Spec{
+		Kind:          "frpc",
+		Runtime:       "docker",
+		Image:         DefaultFrpcImage,
+		ConfigPath:    "/var/lib/dfpanel-agent/frpc-1.json",
+		ConfigSource:  "/opt/dfpanel-agent/frpc-1.json",
+		ContainerName: "dfpanel-frpc-1",
+		MountBinary:   slot,
+		MountSource:   "/opt/dfpanel-agent/bin/frpc-container-linux-amd64",
+	}
+	args := dockerRunArgs(spec, spec.Image, true)
+
+	if indexOf(args, "/opt/dfpanel-agent/frpc-1.json:/var/lib/dfpanel-agent/frpc-1.json:ro") < 0 {
+		t.Errorf("配置挂载应为「宿主源:Agent 路径」：%v", args)
+	}
+	if indexOf(args, "/opt/dfpanel-agent/bin/frpc-container-linux-amd64:"+ContainerFrpcPath+":ro") < 0 {
+		t.Errorf("二进制挂载源应为宿主路径：%v", args)
+	}
+	// 容器里的参数用 Agent 视角的配置路径（也是挂载目标）
+	idx := indexOf(args, "-c")
+	if idx < 0 || idx+1 >= len(args) || args[idx+1] != spec.ConfigPath {
+		t.Errorf("-c 应当用 Agent 视角的配置路径：%v", args)
+	}
+}
+
+// 没有可挂载的二进制时，纯函数不注入 --entrypoint（真正的拦截在 requireDockerReady，
+// 见 TestRequireDockerReady）
 func TestDockerRunArgsWithoutMountedBinary(t *testing.T) {
 	spec := Spec{
 		Kind:          "frps",

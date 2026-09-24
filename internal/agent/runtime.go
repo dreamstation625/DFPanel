@@ -15,18 +15,25 @@ import (
 
 // Spec 描述一个被托管的 frp 进程（或容器）
 type Spec struct {
-	Kind          string // frps / frpc
-	Runtime       string // process / docker
-	BinPath       string
-	Image         string
-	ConfigPath    string
+	Kind    string // frps / frpc
+	Runtime string // process / docker
+	BinPath string
+	Image   string
+	// ConfigPath 配置文件的路径：Agent 自己读写用它，同时也是容器内的挂载目标
+	ConfigPath string
+	// ConfigSource 传给 docker 的配置挂载源（宿主机路径）。Agent 直装在宿主上时留空，
+	// 与 ConfigPath 相同；Agent 自身跑在容器里时是另一条路径。
+	ConfigSource  string
 	LogPath       string
 	// PidPath 子进程 pid 文件：Agent 重启后据此接管仍在运行的实例（docker 运行时不用）
 	PidPath       string
 	ContainerName string
-	// MountBinary docker 运行时专用：宿主机上由面板下发的 frp 二进制，挂进容器并覆盖 entrypoint。
-	// 底座镜像里没有 frp，所以它必须存在 —— 缺失时容器直接起不来（见 requireDockerReady）。
+	// MountBinary docker 运行时专用：由面板下发的 frp 二进制，挂进容器并覆盖 entrypoint。
+	// 这是 Agent 视角的路径（「文件在不在」按它判断）；底座镜像里没有 frp，
+	// 所以它必须存在 —— 缺失时容器直接起不来（见 requireDockerReady）。
 	MountBinary string
+	// MountSource 传给 docker 的挂载源（宿主机路径）。Agent 直装在宿主上时留空，与 MountBinary 相同。
+	MountSource string
 	// MountErr 拿不到 MountBinary 的原因（docker 不可用 / 容器平台不支持 / 槽位尚未就绪），
 	// 用于把「为什么起不来」讲清楚，而不是笼统报一句缺文件。
 	MountErr string
@@ -188,17 +195,28 @@ func (c *Controller) startDocker() error {
 // frp 二进制由面板下发：把宿主机上的文件挂进容器，并显式覆盖 entrypoint 指到它。
 // 不猜镜像里的二进制路径，因此对任意底座镜像都成立；底座里没有 frp，
 // 所以这一步不是「可选增强」，缺失时 startDocker 会先行拒绝。
+//
+// 注意「源」与「目标」不是一回事：挂载源必须是宿主机路径（Source 字段），
+// 而容器内的挂载目标沿用 Agent 自己的路径（Agent 在容器里时两者不同）。
 func dockerRunArgs(spec Spec, image string, hostNetwork bool) []string {
+	cfgSrc := spec.ConfigSource
+	if cfgSrc == "" {
+		cfgSrc = spec.ConfigPath
+	}
 	args := []string{"run", "-d", "--name", spec.ContainerName, "--restart", "unless-stopped",
-		"-v", fmt.Sprintf("%s:%s:ro", spec.ConfigPath, spec.ConfigPath)}
+		"-v", fmt.Sprintf("%s:%s:ro", cfgSrc, spec.ConfigPath)}
 	if hostNetwork {
 		args = append(args, "--network", "host")
 	}
 
 	entrypoint := ""
 	if fi, err := os.Stat(spec.MountBinary); err == nil && fi.Size() > 0 {
+		mountSrc := spec.MountSource
+		if mountSrc == "" {
+			mountSrc = spec.MountBinary
+		}
 		inContainer := ContainerBinaryInContainer(spec.Kind)
-		args = append(args, "-v", fmt.Sprintf("%s:%s:ro", spec.MountBinary, inContainer))
+		args = append(args, "-v", fmt.Sprintf("%s:%s:ro", mountSrc, inContainer))
 		entrypoint = inContainer
 	}
 	if entrypoint != "" {
