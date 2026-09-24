@@ -38,6 +38,7 @@ Thumbs.db
 
 # ---- 测试与调试残留 ----
 .smoke.json
+.smoke-cache/
 coverage.out
 
 # ---- AI 助手工作目录（含会话记忆，切勿提交）----

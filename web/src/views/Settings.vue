@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   frpCacheApi,
   frpVersionApi,
@@ -15,6 +15,7 @@ const loading = ref(false)
 const saving = ref(false)
 const form = reactive<SettingsValues>({
   frpDownloadBase: '',
+  // 手填版本：界面上已隐藏，但保存时要原样带回去，别把它清空
   frpManualVersions: '',
   panelFrpVersion: '',
   frpVersionApi: '',
@@ -152,6 +153,16 @@ async function downloadBinary() {
 }
 
 async function removeBinary(b: FrpCachedBinary) {
+  // 删掉的就是 Agent 切换时要用的那份，确认一下免得手滑
+  try {
+    await ElMessageBox.confirm(
+      `确认删除 ${b.kind} ${b.version}（${b.os}/${b.arch}）？Agent 之后要切到这个版本得重新下载。`,
+      '提示',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
   try {
     const res = await frpCacheApi.remove(b)
     ElMessage.success(res.message)
@@ -223,7 +234,7 @@ onMounted(load)
         <el-form-item label="下载地址模板" required>
           <el-input v-model="form.frpDownloadBase" placeholder="https://.../v{version}/{asset}" />
           <div class="hint">
-            占位符：<code>{version}</code> <code>{asset}</code> <code>{os}</code> <code>{arch}</code>。Agent 从面板拉取，无需访问 GitHub；公共加速站失效就换一个。
+            占位符：<code>{version}</code> <code>{asset}</code> <code>{os}</code> <code>{arch}</code>
           </div>
           <div class="presets">
             <el-select
@@ -240,18 +251,6 @@ onMounted(load)
           <el-text v-if="!baseValid" type="danger" size="small">
             模板必须同时包含 {version} 与 {asset} 占位符
           </el-text>
-        </el-form-item>
-
-        <el-form-item label="手填版本">
-          <el-input
-            v-model="form.frpManualVersions"
-            type="textarea"
-            :rows="2"
-            placeholder="0.62.1, 0.61.1"
-          />
-          <div class="hint">
-            逗号或换行分隔，作为版本列表取不到时的兜底。
-          </div>
         </el-form-item>
 
         <el-form-item label="版本列表接口">
@@ -294,7 +293,11 @@ onMounted(load)
 
     <el-card shadow="never" class="card">
       <template #header>
-        <div class="card-title">frp 二进制（供 Agent 下载）</div>
+        <div class="card-head">
+          <span class="card-title">frp 二进制（供 Agent 下载）</span>
+          <el-text type="info" size="small">共 {{ cacheList.length }} 份</el-text>
+          <el-button size="small" :loading="cacheLoading" @click="loadCache">刷新</el-button>
+        </div>
       </template>
       <div class="hint" style="margin-bottom: 12px">
         Agent 用的 frp 都从面板下发。按目标机器的平台先下载好，Agent 切换版本时直接命中，不用现抓上游。
@@ -362,6 +365,12 @@ onMounted(load)
 .card-title {
   font-size: 15px;
   font-weight: 600;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .hint {

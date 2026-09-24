@@ -618,7 +618,11 @@ export interface FrpCacheResult {
 }
 
 export const frpCacheApi = {
-  list: () => request.get<unknown, FrpCachedBinary[]>('/frp/cache'),
+  /** 后端返回 { cached: [...] }，这里剥一层，调用方直接拿数组 */
+  list: () =>
+    request
+      .get<unknown, { cached: FrpCachedBinary[] }>('/frp/cache')
+      .then((res) => res?.cached || []),
   download: (data: { version: string; kinds: string[]; os: string; arch: string }) =>
     request.post<unknown, FrpCacheResult>('/frp/cache', data, { timeout: FRP_VERSION_TIMEOUT }),
   remove: (b: FrpCachedBinary) =>
