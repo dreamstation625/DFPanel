@@ -31,10 +31,8 @@ const (
 	CmdRollback = "rollback" // 回滚到指定历史版本（payload: {"targetVersion":N}）
 	CmdVersions = "versions" // 列出 Agent 本地保存的历史配置版本
 
-	// CmdFrpDownload 下载指定版本的 frp 二进制并落为版本化文件，不切换 active、不重启
-	// payload: {"version":"0.62.1"}
-	CmdFrpDownload = "frp_download"
-	// CmdFrpActivate 把指定版本切为 active 槽位并重启该 Agent 上全部托管实例
+	// CmdFrpActivate 把指定版本切为 active 槽位并重启该 Agent 上全部托管实例。
+	// 只做切换：二进制一律由面板下发，面板没有该版本时面板侧会直接拒绝，不下发指令。
 	// payload: {"version":"0.62.1"}
 	CmdFrpActivate = "frp_activate"
 

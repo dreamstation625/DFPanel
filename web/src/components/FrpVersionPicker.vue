@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   frpVersionApi,
@@ -12,8 +12,9 @@ import {
 /**
  * frp 版本选择与切换弹窗。
  *
- * 面板本机与 Agent 共用：两者都是「下载（不生效）」+「激活（重启生效）」两步，
- * 这样可以先在维护窗口之前把二进制预置到目标机器，切换时只需换槽位。
+ * 面板本机：「下载（不生效）」+「激活（重启生效）」两步，可以先把二进制预置好，切换时只换槽位。
+ * Agent：只切换，没有下载按钮 —— 二进制统一在「设置 → frp 二进制」里按版本 + 类型 + 平台下载，
+ * 面板缺这个版本时切换会直接被拒绝。
  */
 const props = defineProps<{
   /** 目标类型：local = 面板本机 frps；agent = 远端 Agent（该 Agent 上 frps 与 frpc 共用一个版本） */
@@ -42,6 +43,8 @@ const activeVersion = computed(() => state.value?.active || '')
 const cachedVersions = computed(() => new Set(state.value?.cached || []))
 /** docker 运行时：frp 以容器运行，版本靠挂载宿主机二进制实现，镜像 tag 不变 */
 const isDocker = computed(() => props.target === 'agent' && state.value?.runtime === 'docker')
+/** Agent 侧只切换：下载统一在设置页做 */
+const isAgent = computed(() => props.target === 'agent')
 
 const activeLabel = computed(() => {
   if (isDocker.value && !activeVersion.value) return '镜像自带（未接管）'
@@ -61,6 +64,7 @@ const switchLabel = computed(() => {
 const switchHint = computed(() => {
   if (instanceCount.value === 0) return '还没有托管的实例，切换只替换二进制版本，不会重启任何服务。'
   if (isDocker.value) return '切换时把二进制挂进容器并覆盖启动入口，镜像 tag 不变。未接管前仍用镜像自带的 frp。'
+  if (isAgent.value) return '只做切换，不下载：这个版本的二进制要先在「设置 → frp 二进制」里按平台下载好。'
   return '「下载」只预置二进制，不影响在跑的服务；「切换」才生效。'
 })
 
@@ -90,7 +94,10 @@ async function load(refresh = false) {
     selected.value = keep || s.expected || s.active || v.latest || v.merged[0] || ''
     listMessage.value = v.message || ''
   } catch (e: any) {
-    ElMessage.error(e?.message || '读取 frp 版本信息失败')
+    // 拿不到就明说，别让下拉空着还不给原因
+    const msg = e?.message || '读取 frp 版本信息失败'
+    listMessage.value = msg
+    ElMessage.error(msg)
   } finally {
     loading.value = false
   }
@@ -106,11 +113,18 @@ watch(visible, (v) => {
   }
 })
 
+// 调用方用 v-if 挂载（Agents.vue / Nodes.vue）：组件挂载那一刻 visible 就已经是 true，
+// watch 看不出 false→true 的变化，不会触发 —— 于是首次打开是空列表。这里补一次。
+onMounted(() => {
+  if (visible.value) load()
+})
+
 /**
- * 选定版本后自动把二进制预置好：未缓存的版本直接拉取，
- * 省掉「先点仅下载、再点切换」这一步。已缓存或就是当前生效版本的不重复下载。
+ * 选定版本后自动把二进制预置好，只针对面板本机。
+ * Agent 侧不预置：下载统一在设置页做，这里只负责切换。
  */
 async function autoPrefetch(version: string) {
+  if (isAgent.value) return
   const v = (version || '').trim()
   if (!v || cachedVersions.value.has(v) || v === activeVersion.value) return
   await run('download')
@@ -126,9 +140,8 @@ async function run(action: 'download' | 'activate') {
   try {
     let res: FrpVersionResult
     if (props.target === 'agent' && props.targetId) {
-      res = action === 'download'
-        ? await frpVersionApi.agentDownload(props.targetId, version)
-        : await frpVersionApi.agentActivate(props.targetId, version)
+      // Agent 只切换：下载统一在设置页做，这里不接受 download
+      res = await frpVersionApi.agentActivate(props.targetId, version)
     } else {
       res = action === 'download'
         ? await frpVersionApi.localDownload(version)
@@ -211,7 +224,7 @@ async function run(action: 'download' | 'activate') {
         <el-descriptions-item label="当前生效版本">
           <span v-if="activeVersion">{{ activeVersion }}</span>
           <el-text v-else-if="activeLabel" type="info">{{ activeLabel }}</el-text>
-          <el-text v-else type="info">未知（未安装本地二进制）</el-text>
+          <el-text v-else type="info">未下载</el-text>
         </el-descriptions-item>
         <el-descriptions-item label="期望版本">
           <span v-if="state?.expected">{{ state.expected }}</span>
@@ -261,7 +274,7 @@ async function run(action: 'download' | 'activate') {
             @change="autoPrefetch"
           />
           <div class="hint">
-            版本列表来自 GitHub 官方接口，取不到可直接手填。选定后会自动下载该版本。
+            版本列表来自 GitHub 官方接口，取不到可直接手填。<template v-if="isAgent">Agent 侧只切换，二进制请先在设置页下载。</template><template v-else>选定后会自动下载该版本。</template>
           </div>
           <div class="list-actions">
             <el-button size="small" :loading="loading" @click="load(true)">重新获取版本列表</el-button>
@@ -272,7 +285,7 @@ async function run(action: 'download' | 'activate') {
 
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
-      <el-button :loading="acting === 'download'" @click="run('download')">仅下载</el-button>
+      <el-button v-if="!isAgent" :loading="acting === 'download'" @click="run('download')">仅下载</el-button>
       <el-button type="primary" :loading="acting === 'activate'" @click="run('activate')">
         {{ switchLabel }}
       </el-button>

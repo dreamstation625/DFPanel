@@ -213,9 +213,6 @@ func (a *Agent) handleCommand(cmd proto.CommandData) proto.ResultData {
 	case proto.CmdVersions:
 		return proto.ResultData{OK: true, Versions: a.listHistory(t), Running: a.controller(t).Running()}
 
-	case proto.CmdFrpDownload:
-		return a.handleFrpDownload(cmd)
-
 	case proto.CmdFrpActivate:
 		return a.handleFrpActivate(cmd)
 

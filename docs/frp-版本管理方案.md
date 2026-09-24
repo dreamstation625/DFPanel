@@ -101,10 +101,15 @@ var versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$
 
 | 动作 | 作用 | 风险 |
 |---|---|---|
-| **download** | 面板出网拉取 → 下发到 Agent → 落为版本化文件 → `-v` 自检比对版本号 | 不碰 active、不重启，失败无影响 |
+| **download** | 面板出网拉取 → 落为面板 `bin/` 下的版本化文件（`<kind>-<ver>-<os>-<arch>`）→ `-v` 自检比对版本号 | 不碰 active、不重启，失败无影响 |
 | **activate** | 切 active 槽位 → 逐个重启该 Agent 上全部托管实例 | 触及在跑服务，复用现有健康三态与回滚 |
 
-好处：支持「先预置、等维护窗口再切」；也让离线环境可以先下载。
+下载**只在设置页做**（按版本 + 类型 + 目标平台挑），Agent 侧没有下载入口：
+
+- 好处：能提前给不同架构的 Agent 备好二进制，切换时只是「换槽位」，耗时可控、不会卡在上游下载上；
+  也让离线环境可以先备好再切。
+- 代价：切到一个面板没缓存的版本会直接被拒（400，提示先去设置页下载），多一步手工操作 —— 这是刻意的，
+  好过让切换在十几分钟的上游下载里悬着。
 
 **activate 的回滚策略**（沿用现有机制，不新增判定规则）：
 
@@ -121,10 +126,10 @@ var versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$
 `internal/proto/proto.go`：
 
 ```go
-CmdFrpDownload = "frp_download" // payload: {"version":"0.62.1"}
 CmdFrpActivate = "frp_activate" // payload: {"version":"0.62.1"}
 ```
 
+- Agent 只做切换，没有 `frp_download`：二进制统一由面板在设置页预下载（`CmdFrpDownload` 已移除）。
 - 版本号一律由**面板侧**解析：`latest` 永远在面板解析成具体版本号再下发，避免各 Agent 各自解析产生版本漂移。
 - 走现有 `agent_commands` 队列（离线排队、上线补发），无需新通道。
 - `HeartbeatData` 增加 `frpVersion`（当前 active 版本）与 `frpCached`（已缓存的版本列表），Agent 心跳上报。
@@ -136,10 +141,12 @@ CmdFrpActivate = "frp_activate" // payload: {"version":"0.62.1"}
 ```
 GET  /api/settings                 # 读设置（密钥类字段脱敏）
 POST /api/settings                 # 写设置
-GET  /api/frp-versions?kind=frps   # 可用版本 + 是否已缓存 + 是否为最新
+GET  /api/frp-versions             # 可用版本 + 手填 + 已缓存（Agent 侧二进制也从这里选版本）
+GET  /api/frp/cache                # 面板已缓存的二进制清单（kind / version / os / arch）
+POST /api/frp/cache                # 预下载：{"version":"0.62.1","kinds":["frps","frpc"],"os":"linux","arch":"amd64"}
+DELETE /api/frp/cache?kind=&version=&os=&arch=
 GET  /api/agents/:id/frp           # 该 Agent：期望版本 / active 版本 / 已缓存列表
-POST /api/agents/:id/frp/download  # {"version":"0.62.1"|"latest"}
-POST /api/agents/:id/frp/activate  # {"version":"0.62.1"}
+POST /api/agents/:id/frp/activate  # {"version":"0.62.1"}；面板缺该版本/平台时 400 拒绝
 GET  /api/frp/local                # 面板本机：当前版本 / 已缓存 / 配置的版本
 POST /api/frp/local/download       # 面板本机下载
 POST /api/frp/local/activate       # 面板本机切换并重启全部本机 frps 实例
@@ -237,9 +244,9 @@ docker run -d --name dfpanel-frps-1 --restart unless-stopped \
 
 - `distrib`：版本化落地名（`frps-0.62.1-linux-amd64`）、模板化下载地址、版本号白名单、`ListVersions`（GitHub 官方）、`CachedVersions`、`ActivateBinary`（软链/拷贝）、`ActiveVersion`、`QueryVersion`
 - 设置表 `settings` + `internal/setting`（优先级：DB > flag/env > 默认）；`-frp-download-base` / `DFPANEL_FRP_DOWNLOAD_BASE`
-- Agent：`CmdFrpDownload` / `CmdFrpActivate` / `CmdFrpStatus`；`DFPANEL_FRPVERSION` 已接线；心跳上报 active 版本与已缓存列表；`Agent.FRPVersion / FRPInstalledVersion / FRPCachedVersions / FRPUpdatedAt`
+- Agent：`CmdFrpActivate` / `CmdFrpStatus`（`CmdFrpDownload` 已于 2026-09-24 移除）；`DFPANEL_FRPVERSION` 已接线；心跳上报 active 版本与已缓存列表；`Agent.FRPVersion / FRPInstalledVersion / FRPCachedVersions / FRPUpdatedAt`
 - 面板本机：`frp.Manager` 增加 active 版本查询、已缓存列表、下载与切换、`RunningIDs`
-- 接口：`/api/settings`、`/api/frp-versions`、`/api/frp/local{,/download,/activate}`、`/api/agents/:id/frp{,/download,/activate}`
+- 接口：`/api/settings`、`/api/frp-versions`、`/api/frp/cache`、`/api/frp/local{,/download,/activate}`、`/api/agents/:id/frp{,/activate}`
 - 前端：`views/Settings.vue`、`components/FrpVersionPicker.vue`、Agents 页版本列与入口、Nodes 页 frpc 版本列、ServerConfig 页版本标签、侧边栏「设置」
 
 ### 与方案有出入的地方（实现时调整）
@@ -282,6 +289,28 @@ docker run -d --name dfpanel-frps-1 --restart unless-stopped \
   `internal/agent/runtime_test.go`（docker run 参数顺序：`--entrypoint` 必须在镜像名前、
   `-c 配置` 在镜像名后、空槽位文件不覆盖、frpc 用独立挂载点）。
 - 重新构建：`output/dfpanel-<本机平台>-amd64` 与 `output/dfpanel-agent-{linux-amd64,linux-arm64,windows-amd64,darwin-arm64}`。
+
+### 下载收口到设置页（第三轮追加，2026-09-24）
+
+动机：原先 Agent 侧能自己触发下载（`CmdFrpDownload`、版本弹窗的「仅下载」、创建 Agent 时预置），
+切换一个没缓存的版本时会现抓上游，十几分钟没个准信，且不同架构的 Agent 各抓各的、缓存无法复用。
+现改为**面板统一备料、Agent 只切换**：
+
+- `distrib` 新增 `CachedBinary` / `ListCachedBinaries` / `ParseBinaryPlatform` / `RemoveCachedBinary`：
+  扫描面板 `bin/` 下的版本化文件（含 os/arch 反解），active 槽位（`frps`、`frps.exe`）不计入。
+- `handler/frpver.go` 新增 `CacheList` / `CacheDownload` / `CacheDelete`（`GET|POST|DELETE /api/frp/cache`），
+  下载按 **版本 + 类型（frps/frpc）+ 平台（os/arch）** 三个维度指定，默认取面板自身平台。
+- `AgentFrpActivate` 下发前先过 `ensurePanelCache`：按 `Agent.OS/Arch` 与角色检查面板 `bin/` 里有没有对应文件
+  （Agent 自己已缓存该版本则放行）；缺一份就 400，提示「请先到设置 → frp 二进制里下载」。
+  Agent 未上报平台信息时不拦截，交给 Agent 自己判。
+- 移除 `CmdFrpDownload` 与 `handleFrpDownload`；`AgentManageHandler.Create` 不再下发预置下载指令，
+  期望版本只写进记录。
+- 前端：`Settings.vue` 新增「frp 二进制（供 Agent 下载）」卡片（版本下拉 + 类型多选 + 平台下拉 + 下载按钮 + 缓存清单表格）；
+  `FrpVersionPicker.vue` 在 Agent 模式下隐藏「仅下载」按钮、关闭自动预取；`Agents.vue` / `Nodes.vue`
+  未接管时的文案改为「未下载」/「镜像自带（未接管）」，创建提示改为「先到设置页下载再到 Agent 上切换」。
+- 单测：`internal/distrib/cache_test.go`（清单扫描、平台反解、删除与越界防护）、
+  `internal/handler/frpver_cache_test.go`（面板缺缓存时切换被拒、已放行场景）。
+- 重新构建：`output/dfpanel-{windows,linux}-amd64`、`output/dfpanel-agent-{windows,linux}-amd64`。
 
 ### 本轮未覆盖（需在有 docker 的机器上验证）
 

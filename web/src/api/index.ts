@@ -577,7 +577,12 @@ export const settingApi = {
   save: (data: Partial<SettingsValues>) => request.post<unknown, SettingsValues>('/settings', data),
   /** refresh=true 时忽略面板侧缓存重新拉取 */
   frpVersions: (refresh = false) =>
-    request.get<unknown, FrpVersionsResult>('/frp-versions', refresh ? { params: { refresh: 1 } } : {}),
+    request.get<unknown, FrpVersionsResult>('/frp-versions', {
+      // 面板侧拉 GitHub 官方列表最坏要等 20s，这里必须留余量，
+      // 否则它准备好的「内置列表兜底」还没返回就被前端按 20s 默认超时掐断，下拉照样空
+      timeout: 25000,
+      ...(refresh ? { params: { refresh: 1 } } : {}),
+    }),
 }
 
 export const frpVersionApi = {
@@ -589,10 +594,37 @@ export const frpVersionApi = {
     request.post<unknown, FrpVersionResult>('/frp/local/activate', { version }, { timeout: FRP_VERSION_TIMEOUT }),
   /** 某个 Agent 的 frp 版本状态 */
   agent: (id: number) => request.get<unknown, FrpVersionState>(`/agents/${id}/frp`),
-  agentDownload: (id: number, version: string) =>
-    request.post<unknown, FrpVersionResult>(`/agents/${id}/frp/download`, { version }, { timeout: FRP_VERSION_TIMEOUT }),
   agentActivate: (id: number, version: string) =>
     request.post<unknown, FrpVersionResult>(`/agents/${id}/frp/activate`, { version }, { timeout: FRP_VERSION_TIMEOUT }),
+}
+
+/** 面板已缓存的一份 frp 二进制（版本化文件） */
+export interface FrpCachedBinary {
+  /** frps / frpc */
+  kind: string
+  version: string
+  os: string
+  arch: string
+  /** 磁盘上的文件名 */
+  name: string
+  size: number
+  modTime: string
+}
+
+export interface FrpCacheResult {
+  ok?: boolean
+  message: string
+  cached: FrpCachedBinary[]
+}
+
+export const frpCacheApi = {
+  list: () => request.get<unknown, FrpCachedBinary[]>('/frp/cache'),
+  download: (data: { version: string; kinds: string[]; os: string; arch: string }) =>
+    request.post<unknown, FrpCacheResult>('/frp/cache', data, { timeout: FRP_VERSION_TIMEOUT }),
+  remove: (b: FrpCachedBinary) =>
+    request.delete<unknown, FrpCacheResult>('/frp/cache', {
+      params: { kind: b.kind, version: b.version, os: b.os, arch: b.arch },
+    }),
 }
 
 /** 运行状态标签文案与颜色 */

@@ -1,7 +1,11 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -74,9 +78,14 @@ func (h *FrpHandler) ListVersions(c *gin.Context) {
 		available, err = distrib.ListVersions()
 	}
 	msg := ""
-	if err != nil {
+	switch {
+	case err != nil:
 		// 拉不到官方列表就退回内置列表：下拉空着的话用户没法选，只能干瞪眼
 		msg = "读取官方版本列表失败，已用内置列表兜底（要更新的版本可直接手填）：" + err.Error()
+		available = distrib.FallbackVersions
+	case len(available) == 0:
+		// 接口通了但一个版本都没解析出来（限流、返回体被代理改写等），同样不能让下拉空着
+		msg = "官方版本列表为空，已用内置列表兜底（要更新的版本可直接手填）"
 		available = distrib.FallbackVersions
 	}
 
@@ -327,28 +336,124 @@ func (h *FrpHandler) AgentFrp(c *gin.Context) {
 	})
 }
 
-// AgentFrpDownload POST /api/agents/:id/frp/download 让 Agent 下载指定版本（不切换、不重启）
-func (h *FrpHandler) AgentFrpDownload(c *gin.Context) {
-	a, version, ok := h.agentAndVersion(c)
-	if !ok {
+// ---------- 面板侧二进制缓存 ----------
+//
+// 下载一律在设置页做：Agent 侧只负责切换，不再现场抓上游。
+// 这样切换耗时可控（命中缓存就是传个文件），也能提前给不同架构的 Agent 备好二进制。
+
+// CacheList GET /api/frp/cache 面板已缓存的 frp 二进制清单
+func (h *FrpHandler) CacheList(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"cached": distrib.ListCachedBinaries(h.binDir())})
+}
+
+// CacheDownload POST /api/frp/cache 预下载指定版本 / 类型 / 平台
+func (h *FrpHandler) CacheDownload(c *gin.Context) {
+	var req struct {
+		Version string   `json:"version"`
+		Kinds   []string `json:"kinds"`
+		OS      string   `json:"os"`
+		Arch    string   `json:"arch"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
 		return
 	}
-	res, err := dispatch(h.hub, &model.AgentCommand{
-		AgentID:    a.ID,
-		Type:       proto.CmdFrpDownload,
-		TargetType: proto.TargetAgent,
-		Payload:    frpVersionPayload(version),
-		// 面板可能要先从上游抓包，镜像站慢的时候十几分钟才回来，等待窗口给足
-		TimeoutMs:  int((35 * time.Minute).Milliseconds()),
+	version, err := h.resolveVersion(req.Version)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	kinds := req.Kinds
+	if len(kinds) == 0 {
+		kinds = []string{"frps", "frpc"}
+	}
+	goos, goarch := req.OS, req.Arch
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goarch == "" {
+		goarch = runtime.GOARCH
+	}
+
+	base := setting.Load(h.cfg.FRPDownloadBase).FrpDownloadBase
+	done := []string{}
+	for _, kind := range kinds {
+		if kind != "frps" && kind != "frpc" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "未知类型：" + kind})
+			return
+		}
+		if _, err := distrib.EnsureFRPBinary(kind, version, goos, goarch, h.binDir(), base); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "下载 " + kind + " " + version + " 失败：" + err.Error()})
+			return
+		}
+		done = append(done, kind)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":      true,
+		"message": "已下载 " + strings.Join(done, "、") + " " + version + "（" + goos + "/" + goarch + "）",
+		"cached":  distrib.ListCachedBinaries(h.binDir()),
 	})
-	// 下载不改变期望版本，故不写 frp_version
-	h.writeAgentResult(c, a.ID, res, err, "")
+}
+
+// CacheDelete DELETE /api/frp/cache 删掉一份已缓存的二进制
+func (h *FrpHandler) CacheDelete(c *gin.Context) {
+	kind, version := c.Query("kind"), c.Query("version")
+	if err := distrib.RemoveCachedBinary(h.binDir(), kind, version, c.Query("os"), c.Query("arch")); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":      true,
+		"message": "已删除 " + kind + " " + version,
+		"cached":  distrib.ListCachedBinaries(h.binDir()),
+	})
+}
+
+// binDir 面板存放 frp 二进制的目录，与分发端点用的是同一个
+func (h *FrpHandler) binDir() string {
+	return filepath.Join(h.cfg.DataDir, "bin")
+}
+
+// ensurePanelCache 切换前确认面板手里有这个版本、这个平台的二进制。
+// Agent 的二进制一律从面板拉，面板没有就得先去设置页下载 —— 与其让切换卡在
+// 十几分钟的上游下载上，不如提前把话说清楚。
+func (h *FrpHandler) ensurePanelCache(a *model.Agent, version string) error {
+	// Agent 自己手里已经有这个版本就放行：切换只是换槽位，不用再拉
+	for _, v := range splitCSV(a.FRPCachedVersions) {
+		if v == version {
+			return nil
+		}
+	}
+	goos, goarch := a.OS, a.Arch
+	if goos == "" || goarch == "" {
+		// 还没上报平台信息，判断不了要哪一份，交给 Agent 自己处理
+		return nil
+	}
+	missing := []string{}
+	for _, kind := range []string{"frps", "frpc"} {
+		if !a.HasRole(kind) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(h.binDir(), distrib.BinaryName(kind, version, goos, goarch))); err != nil {
+			missing = append(missing, kind)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("面板还没有 %s %s（%s/%s）的二进制，请先到「设置 → frp 二进制」里下载，再回来切换",
+			strings.Join(missing, "、"), version, goos, goarch)
+	}
+	return nil
 }
 
 // AgentFrpActivate POST /api/agents/:id/frp/activate 切换版本并重启该 Agent 上全部托管实例
 func (h *FrpHandler) AgentFrpActivate(c *gin.Context) {
 	a, version, ok := h.agentAndVersion(c)
 	if !ok {
+		return
+	}
+	// 面板没有这个版本就别下发：Agent 会现抓上游，慢且容易超时
+	if err := h.ensurePanelCache(a, version); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	res, err := dispatch(h.hub, &model.AgentCommand{

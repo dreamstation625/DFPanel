@@ -37,7 +37,7 @@ function onFrpClosed() {
 
 /** frp 版本展示：优先显示实际生效版本，未接管时按运行时给出说明 */
 function frpLabel(a: AgentInfo) {
-  if (!a.frpInstalledVersion) return a.runtime === 'docker' ? '镜像自带' : '—'
+  if (!a.frpInstalledVersion) return a.runtime === 'docker' ? '镜像自带（未接管）' : '未下载'
   return a.frpInstalledVersion
 }
 
@@ -63,7 +63,7 @@ function compareSemver(x: string, y: string) {
 const createVisible = ref(false)
 const createForm = reactive({ name: '', remark: '', roles: ['frpc'] as string[], frpVersion: '' })
 
-// 新建时可以先挑好 frp 版本：创建后只预置二进制，等 Agent 上线自动下载，不切换也不重启
+// 新建时可以先挑好 frp 版本：只记为期望版本，二进制要在设置页按平台下载后再来切换
 const frpVersionOptions = ref<string[]>([])
 const frpVersionLatest = ref('')
 
@@ -145,7 +145,7 @@ async function submitCreate() {
     createVisible.value = false
     await load()
     if (pickedVersion) {
-      ElMessage.success(`Agent 已创建，上线后会自动下载 frp ${pickedVersion}（只预置，不切换不重启）`)
+      ElMessage.success(`Agent 已创建，期望 frp ${pickedVersion}（该版本要先在设置页下载，再到这里切换）`)
       openInstall(created)
       return
     }
@@ -189,6 +189,12 @@ async function openInstall(a: AgentInfo) {
   installRuntime.value = 'process'
   installVisible.value = true
   await loadInstall()
+}
+
+/** 进程模式只给一键脚本：Agent 装成宿主机二进制，frp 也是子进程，没有容器什么事 */
+function onRuntimeChange() {
+  if (installRuntime.value === 'process') installMode.value = 'binary'
+  loadInstall()
 }
 
 async function loadInstall() {
@@ -350,7 +356,7 @@ onMounted(load)
             />
           </el-select>
           <div class="hint-line">
-            创建后只把二进制预置到机器上并记为期望版本，不切换、不重启；Agent 上线后自动下载。
+            只记为期望版本，不切换、不重启。该版本要先在设置页下载好，再到 Agent 上切换。
           </div>
         </el-form-item>
         <el-form-item label="备注">
@@ -400,13 +406,13 @@ onMounted(load)
             <el-radio-button value="linux">Linux / macOS</el-radio-button>
             <el-radio-button value="windows">Windows</el-radio-button>
           </el-radio-group>
-          <el-radio-group v-model="installRuntime" size="small" style="margin-left: 12px" @change="loadInstall">
+          <el-radio-group v-model="installRuntime" size="small" style="margin-left: 12px" @change="onRuntimeChange">
             <el-radio-button value="process">进程运行</el-radio-button>
             <el-radio-button value="docker">Docker 容器运行</el-radio-button>
           </el-radio-group>
         </div>
 
-        <el-tabs v-model="installMode">
+        <el-tabs v-if="installRuntime === 'docker'" v-model="installMode">
           <el-tab-pane label="一键脚本" name="binary" />
           <el-tab-pane label="docker run" name="docker" />
           <el-tab-pane label="docker compose" name="compose" />
@@ -414,7 +420,7 @@ onMounted(load)
 
         <pre class="code-block">{{ currentCommand }}</pre>
         <div class="hint-line">
-          <span v-if="installRuntime === 'docker'">
+          <span v-if="installRuntime === 'docker' && installMode !== 'binary'">
             容器内已内置 frps / frpc；需挂载 /var/run/docker.sock。
           </span>
           <span v-else>自动注册 systemd / launchd / 计划任务并开机自启。</span>

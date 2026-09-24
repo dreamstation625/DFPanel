@@ -12,7 +12,6 @@ import (
 	"dfpanel/internal/database"
 	"dfpanel/internal/distrib"
 	"dfpanel/internal/model"
-	"dfpanel/internal/proto"
 )
 
 // AgentManageHandler Agent 管理面接口（JWT 鉴权）
@@ -100,17 +99,8 @@ func (h *AgentManageHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// 新建时只让 Agent 预置二进制：不发切换指令，不重启任何服务。
-	// 此刻 Agent 一般还没安装上线，指令会排在队列里，等它上线后自动补发执行。
-	if version != "" {
-		_, _ = dispatch(h.hub, &model.AgentCommand{
-			AgentID:    a.ID,
-			Type:       proto.CmdFrpDownload,
-			TargetType: proto.TargetAgent,
-			Payload:    `{"version":"` + version + `"}`,
-			TimeoutMs:  int((30 * time.Second).Milliseconds()),
-		})
-	}
+	// 期望版本只落在记录里：下载统一在设置页做，切换由用户在 Agent 上点。
+	// 这里不下发任何指令，免得 Agent 刚上线就被拖去抓上游。
 	c.JSON(http.StatusOK, a)
 }
 

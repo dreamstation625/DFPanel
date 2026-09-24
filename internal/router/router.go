@@ -126,8 +126,10 @@ func Setup(cfg *config.Config) *gin.Engine {
 			authed.GET("/frp/local", frpHandler.LocalFrp)
 			authed.POST("/frp/local/download", frpHandler.LocalFrpDownload)
 			authed.POST("/frp/local/activate", frpHandler.LocalFrpActivate)
+			authed.GET("/frp/cache", frpHandler.CacheList)
+			authed.POST("/frp/cache", frpHandler.CacheDownload)
+			authed.DELETE("/frp/cache", frpHandler.CacheDelete)
 			authed.GET("/agents/:id/frp", frpHandler.AgentFrp)
-			authed.POST("/agents/:id/frp/download", frpHandler.AgentFrpDownload)
 			authed.POST("/agents/:id/frp/activate", frpHandler.AgentFrpActivate)
 		}
 	}

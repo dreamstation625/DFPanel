@@ -215,6 +215,137 @@ func EnsureFRPBinary(kind, version, goos, goarch, dir, base string) (string, err
 	return dest, nil
 }
 
+// ---------- 面板侧缓存清单 ----------
+
+// CachedBinary 面板 bin 目录里已缓存的一份 frp 二进制（版本化文件，不含 active 槽位）
+type CachedBinary struct {
+	Kind    string    `json:"kind"`
+	Version string    `json:"version"`
+	OS      string    `json:"os"`
+	Arch    string    `json:"arch"`
+	Name    string    `json:"name"`
+	Size    int64     `json:"size"`
+	ModTime time.Time `json:"modTime"`
+}
+
+// knownPlatforms 版本化文件名可能带的平台后缀，用于从文件名反解
+var knownPlatforms = []struct{ goos, goarch string }{
+	{"linux", "amd64"}, {"linux", "arm64"}, {"linux", "arm"},
+	{"darwin", "amd64"}, {"darwin", "arm64"},
+	{"windows", "amd64"}, {"windows", "arm64"}, {"windows", "386"},
+}
+
+// ParseBinaryPlatform 从版本化文件名反解平台，如 frps-0.62.1-linux-amd64 -> linux / amd64
+func ParseBinaryPlatform(name, kind string) (string, string) {
+	base := strings.TrimSuffix(strings.TrimPrefix(name, kind+"-"), ".exe")
+	for _, p := range knownPlatforms {
+		if strings.HasSuffix(base, "-"+p.goos+"-"+p.goarch) {
+			return p.goos, p.goarch
+		}
+	}
+	return "", ""
+}
+
+// ListCachedBinaries 扫描 dir 下全部版本化 frp 二进制，按类型、版本倒序排列。
+// active 槽位是 frps / frps.exe 这种固定名，不会被算进来。
+func ListCachedBinaries(dir string) []CachedBinary {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return []CachedBinary{}
+	}
+	out := []CachedBinary{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		kind := ""
+		switch {
+		case strings.HasPrefix(name, "frps-"):
+			kind = "frps"
+		case strings.HasPrefix(name, "frpc-"):
+			kind = "frpc"
+		default:
+			continue
+		}
+		version := ParseBinaryName(name, kind)
+		if version == "" {
+			continue
+		}
+		goos, goarch := ParseBinaryPlatform(name, kind)
+		if goos == "" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, CachedBinary{
+			Kind:    kind,
+			Version: version,
+			OS:      goos,
+			Arch:    goarch,
+			Name:    name,
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		if out[i].Version != out[j].Version {
+			return versionGreater(out[i].Version, out[j].Version)
+		}
+		if out[i].OS != out[j].OS {
+			return out[i].OS < out[j].OS
+		}
+		return out[i].Arch < out[j].Arch
+	})
+	return out
+}
+
+// versionGreater 按数字段比较版本号，0.10.0 要排在 0.9.0 前面
+func versionGreater(a, b string) bool {
+	pa, pb := versionParts(a), versionParts(b)
+	for i := 0; i < len(pa); i++ {
+		if pa[i] != pb[i] {
+			return pa[i] > pb[i]
+		}
+	}
+	return false
+}
+
+func versionParts(v string) [3]int {
+	var out [3]int
+	fields := strings.Split(v, ".")
+	for i := 0; i < len(out) && i < len(fields); i++ {
+		n, _ := strconv.Atoi(fields[i])
+		out[i] = n
+	}
+	return out
+}
+
+// RemoveCachedBinary 删除 dir 下指定的版本化二进制。
+// 只认 <kind>-<ver>-<os>-<arch> 这种名字，active 槽位（frps / frps.exe）删不掉。
+func RemoveCachedBinary(dir, kind, version, goos, goarch string) error {
+	if kind != "frps" && kind != "frpc" {
+		return fmt.Errorf("未知类型：%s", kind)
+	}
+	if !ValidVersion(version) {
+		return fmt.Errorf("版本号格式不合法：%s", version)
+	}
+	name := BinaryName(kind, version, goos, goarch)
+	path := filepath.Join(dir, name)
+	if filepath.Dir(path) != filepath.Clean(dir) {
+		return fmt.Errorf("路径不合法：%s", name)
+	}
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("没有缓存 %s", name)
+	}
+	return os.Remove(path)
+}
+
 // downloadToFile 把 url 下载到 f（每次从头写）；网络中断或超时都返回错误，交给调用方重试
 func downloadToFile(client *http.Client, url string, f *os.File) error {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {

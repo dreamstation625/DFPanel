@@ -2,8 +2,10 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
+  frpCacheApi,
   frpVersionApi,
   settingApi,
+  type FrpCachedBinary,
   type FrpVersionState,
   type SettingsValues,
 } from '@/api'
@@ -21,6 +23,23 @@ const form = reactive<SettingsValues>({
 
 const local = ref<FrpVersionState | null>(null)
 const pickerVisible = ref(false)
+
+/** 面板已缓存的 frp 二进制，Agent 的 frp 都从这些文件下发 */
+const cacheList = ref<FrpCachedBinary[]>([])
+const cacheLoading = ref(false)
+const downloading = ref(false)
+const versionOptions = ref<string[]>([])
+const latestVersion = ref('')
+const dlForm = reactive({ version: '', kinds: ['frps', 'frpc'], platform: 'linux/amd64' })
+
+const PLATFORMS = [
+  { label: 'linux / amd64', value: 'linux/amd64' },
+  { label: 'linux / arm64', value: 'linux/arm64' },
+  { label: 'linux / arm', value: 'linux/arm' },
+  { label: 'darwin / amd64', value: 'darwin/amd64' },
+  { label: 'darwin / arm64', value: 'darwin/arm64' },
+  { label: 'windows / amd64', value: 'windows/amd64' },
+]
 
 /**
  * 常用下载源。公共加速站都是「站址 + 原始 GitHub 地址」的拼法，
@@ -82,6 +101,76 @@ async function load() {
   } finally {
     loading.value = false
   }
+  // 版本列表取不到不影响别的区块，各自兜住
+  await Promise.all([loadVersions(), loadCache()])
+}
+
+/** 可选版本列表，供下载表单的下拉使用 */
+async function loadVersions() {
+  try {
+    const v = await settingApi.frpVersions()
+    versionOptions.value = v.merged || []
+    latestVersion.value = v.latest || ''
+    if (!dlForm.version) dlForm.version = v.latest || v.merged[0] || ''
+  } catch {
+    versionOptions.value = []
+  }
+}
+
+async function loadCache() {
+  cacheLoading.value = true
+  try {
+    cacheList.value = await frpCacheApi.list()
+  } catch (e: any) {
+    ElMessage.error(e?.message || '读取已缓存的 frp 二进制失败')
+  } finally {
+    cacheLoading.value = false
+  }
+}
+
+async function downloadBinary() {
+  const version = dlForm.version.trim()
+  if (!version) {
+    ElMessage.warning('请选择或填写要下载的 frp 版本')
+    return
+  }
+  if (!dlForm.kinds.length) {
+    ElMessage.warning('至少勾选 frps / frpc 中的一种')
+    return
+  }
+  const [os, arch] = dlForm.platform.split('/')
+  downloading.value = true
+  try {
+    const res = await frpCacheApi.download({ version, kinds: dlForm.kinds, os, arch })
+    ElMessage.success(res.message)
+    cacheList.value = res.cached || []
+  } catch (e: any) {
+    ElMessage.error(e?.message || '下载失败')
+  } finally {
+    downloading.value = false
+  }
+}
+
+async function removeBinary(b: FrpCachedBinary) {
+  try {
+    const res = await frpCacheApi.remove(b)
+    ElMessage.success(res.message)
+    cacheList.value = res.cached || []
+  } catch (e: any) {
+    ElMessage.error(e?.message || '删除失败')
+  }
+}
+
+function fmtSize(n: number) {
+  if (!n) return '-'
+  const mb = n / 1024 / 1024
+  return mb >= 1 ? mb.toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB'
+}
+
+function fmtWhen(s: string) {
+  if (!s) return '-'
+  const d = new Date(s)
+  return Number.isNaN(d.getTime()) ? s : d.toLocaleString('zh-CN', { hour12: false })
 }
 
 async function save() {
@@ -203,6 +292,63 @@ onMounted(load)
       </el-tag>
     </el-card>
 
+    <el-card shadow="never" class="card">
+      <template #header>
+        <div class="card-title">frp 二进制（供 Agent 下载）</div>
+      </template>
+      <div class="hint" style="margin-bottom: 12px">
+        Agent 用的 frp 都从面板下发。按目标机器的平台先下载好，Agent 切换版本时直接命中，不用现抓上游。
+      </div>
+
+      <div class="dl-bar">
+        <el-select
+          v-model="dlForm.version"
+          filterable
+          allow-create
+          default-first-option
+          placeholder="版本"
+          style="width: 170px"
+        >
+          <el-option
+            v-for="v in versionOptions"
+            :key="v"
+            :value="v"
+            :label="v === latestVersion ? `${v}（最新）` : v"
+          />
+        </el-select>
+        <el-checkbox-group v-model="dlForm.kinds" size="small">
+          <el-checkbox-button value="frps">frps</el-checkbox-button>
+          <el-checkbox-button value="frpc">frpc</el-checkbox-button>
+        </el-checkbox-group>
+        <el-select v-model="dlForm.platform" placeholder="平台" style="width: 170px">
+          <el-option v-for="p in PLATFORMS" :key="p.value" :label="p.label" :value="p.value" />
+        </el-select>
+        <el-button type="primary" :loading="downloading" @click="downloadBinary">下载</el-button>
+      </div>
+
+      <el-table :data="cacheList" v-loading="cacheLoading" size="small" max-height="320" style="margin-top: 12px">
+        <el-table-column label="类型" width="80" prop="kind" />
+        <el-table-column label="版本" width="110" prop="version" />
+        <el-table-column label="平台" width="150">
+          <template #default="{ row }">{{ row.os }}/{{ row.arch }}</template>
+        </el-table-column>
+        <el-table-column label="大小" width="100">
+          <template #default="{ row }">{{ fmtSize(row.size) }}</template>
+        </el-table-column>
+        <el-table-column label="下载时间">
+          <template #default="{ row }">{{ fmtWhen(row.modTime) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="80">
+          <template #default="{ row }">
+            <el-button link type="danger" @click="removeBinary(row)">删除</el-button>
+          </template>
+        </el-table-column>
+        <template #empty>
+          <el-empty description="还没有缓存任何 frp 二进制" :image-size="60" />
+        </template>
+      </el-table>
+    </el-card>
+
     <FrpVersionPicker v-model="pickerVisible" target="local" target-name="面板本机" @closed="reloadLocal" />
   </div>
 </template>
@@ -230,6 +376,13 @@ onMounted(load)
   align-items: center;
   gap: 8px;
   margin-top: 6px;
+}
+
+.dl-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 code {

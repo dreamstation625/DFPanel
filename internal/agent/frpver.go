@@ -229,43 +229,6 @@ func (a *Agent) ensureRuntimeBinary(kind string) (bool, error) {
 	return true, nil
 }
 
-// handleFrpDownload 下载指定版本的 frp 二进制到版本化目录：不切槽位、不重启
-func (a *Agent) handleFrpDownload(cmd proto.CommandData) proto.ResultData {
-	var req frpVersionPayload
-	if cmd.Payload != "" {
-		_ = json.Unmarshal([]byte(cmd.Payload), &req)
-	}
-	version := strings.TrimSpace(req.Version)
-	if version == "" {
-		return proto.ResultData{Message: "未指定要下载的 frp 版本"}
-	}
-	kinds := a.enabledKinds()
-	if len(kinds) == 0 {
-		return proto.ResultData{Message: "该 Agent 未启用 frps / frpc 角色，无需下载 frp 二进制"}
-	}
-
-	active, _ := a.frpStatus()
-	resolved := ""
-	for _, kind := range kinds {
-		_, ver, err := a.ensureVersionedBinary(kind, version)
-		if err != nil {
-			return proto.ResultData{Message: fmt.Sprintf("下载 %s %s 失败：%v", kind, version, err)}
-		}
-		resolved = ver
-	}
-	active, cached := a.frpStatus()
-	mode := "已下载"
-	if a.cfg.Runtime == "docker" {
-		mode = "已下载（容器平台二进制，尚未挂载生效）"
-	}
-	return proto.ResultData{
-		OK:         true,
-		Message:    fmt.Sprintf("%s frp %s（当前生效版本：%s）", mode, resolved, emptyAs(active, "镜像自带")),
-		FrpVersion: active,
-		FrpCached:  cached,
-	}
-}
-
 // handleFrpActivate 把指定版本切为 active 槽位，并重启该 Agent 上全部托管实例。
 //
 // 由于 frps 与 frpc 共用一个版本，切换是「整体」行为：
