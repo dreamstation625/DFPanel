@@ -13,6 +13,8 @@ NODE_KEY=""
 NODE_SECRET=""
 ROLES="frpc"
 RUNTIME="process"
+# 期望的 frp 版本，由面板在安装命令里带上；留空表示不指定，Agent 启动时取面板的 latest
+FRP_VERSION=""
 INSTALL_DIR="/usr/local/bin"
 CONF_DIR="/etc/dfpanel-agent"
 DATA_DIR="/var/lib/dfpanel-agent"
@@ -22,7 +24,7 @@ PURGE=0
 usage() {
   cat <<'EOF'
 用法:
-  安装: install.sh --panel <面板地址> --node-key <安装令牌> --secret <密钥> [--roles frps,frpc] [--runtime process|docker]
+  安装: install.sh --panel <面板地址> --node-key <安装令牌> --secret <密钥> [--roles frps,frpc] [--runtime process|docker] [--frp-version x.y.z]
   卸载: install.sh --uninstall [--purge]
     --uninstall  停止托管的 frp 实例、注销服务、删除配置与二进制；默认保留数据目录
     --purge      卸载时连数据目录一起删（frp 二进制缓存等）
@@ -90,6 +92,7 @@ while [[ $# -gt 0 ]]; do
     --secret)     NODE_SECRET="$2"; shift 2 ;;
     --roles)      ROLES="$2"; shift 2 ;;
     --runtime)    RUNTIME="$2"; shift 2 ;;
+    --frp-version) FRP_VERSION="$2"; shift 2 ;;
     --uninstall)  UNINSTALL=1; shift ;;
     --purge)      PURGE=1; shift ;;
     -h | --help)  usage; exit 0 ;;
@@ -147,18 +150,14 @@ cat > "$CONF_DIR/agent.json" <<EOF
   "secret": "$NODE_SECRET",
   "roles": "$ROLES",
   "runtime": "$RUNTIME",
+  "frp_version": "$FRP_VERSION",
   "data_dir": "$DATA_DIR"
 }
 EOF
 chmod 600 "$CONF_DIR/agent.json"
 
-# 预置 frpc / frps 二进制（缺失时 Agent 运行时会自行从面板补拉，此处失败不阻断）
-if echo "$ROLES" | grep -q "frpc"; then
-  curl -fsSL "$PANEL/downloads/frpc/latest/$OS/$ARCH" -o "$DATA_DIR/frpc" 2>/dev/null && chmod +x "$DATA_DIR/frpc" || true
-fi
-if echo "$ROLES" | grep -q "frps"; then
-  curl -fsSL "$PANEL/downloads/frps/latest/$OS/$ARCH" -o "$DATA_DIR/frps" 2>/dev/null && chmod +x "$DATA_DIR/frps" || true
-fi
+# frp 二进制不在这里预置：一律由 Agent 启动时按上面的版本从面板取，
+# 面板没备好会明确报错提示去「设置 → frp 二进制」下载，不在这里静默失败。
 
 if [[ "$OS" == "linux" ]] && command -v systemctl >/dev/null 2>&1; then
   echo "==> 注册 systemd 服务"

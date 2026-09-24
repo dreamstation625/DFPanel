@@ -47,7 +47,7 @@ const isDocker = computed(() => props.target === 'agent' && state.value?.runtime
 const isAgent = computed(() => props.target === 'agent')
 
 const activeLabel = computed(() => {
-  if (isDocker.value && !activeVersion.value) return '镜像自带（未接管）'
+  if (isDocker.value && !activeVersion.value) return '未下发'
   return ''
 })
 
@@ -63,7 +63,7 @@ const switchLabel = computed(() => {
 /** 三种目标的说明文案，按有没有实例、是不是容器运行时分开说 */
 const switchHint = computed(() => {
   if (instanceCount.value === 0) return '还没有托管的实例，切换只替换二进制版本，不会重启任何服务。'
-  if (isDocker.value) return '切换时把二进制挂进容器并覆盖启动入口，镜像 tag 不变。未接管前仍用镜像自带的 frp。'
+  if (isDocker.value) return '切换会把二进制挂进容器并覆盖启动入口。容器底座镜像里不含 frp，二进制必须先由面板下发，否则容器起不来。'
   if (isAgent.value) return '只做切换，不下载：这个版本的二进制要先在「设置 → frp 二进制」里按平台下载好。'
   return '「下载」只预置二进制，不影响在跑的服务；「切换」才生效。'
 })
@@ -223,7 +223,7 @@ async function run(action: 'download' | 'activate') {
       <el-descriptions :column="2" border size="small" style="margin-bottom: 14px">
         <el-descriptions-item label="当前生效版本">
           <span v-if="activeVersion">{{ activeVersion }}</span>
-          <el-text v-else-if="activeLabel" type="info">{{ activeLabel }}</el-text>
+          <el-text v-else-if="activeLabel" type="warning">{{ activeLabel }}</el-text>
           <el-text v-else type="info">未下载</el-text>
         </el-descriptions-item>
         <el-descriptions-item label="期望版本">

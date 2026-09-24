@@ -14,7 +14,6 @@ import (
 	"dfpanel/internal/database"
 	"dfpanel/internal/distrib"
 	"dfpanel/internal/model"
-	"dfpanel/internal/setting"
 )
 
 // InstallHandler 安装脚本分发与一键安装命令生成（支持二进制与 Docker 两种形态）
@@ -105,9 +104,11 @@ func (h *InstallHandler) DownloadAgent(c *gin.Context) {
 
 // DownloadFRP GET /downloads/:kind/:version/:os/:arch 分发 frps / frpc 二进制
 //
-// 本地缓存缺失时由面板按配置的下载地址模板（可指向镜像源）抓取，并落为版本化文件。
-// version 可用 latest，解析出的具体版本号通过 X-Frp-Version 响应头回传，
-// 便于 Agent 侧以确定版本号记账。
+// 只发面板缓存里已有的那一份：上游抓取一律在设置页由管理员触发（可配镜像源、有结果反馈），
+// Agent 侧不做「现抓上游」，缺什么就直接说缺什么，别让它在一次启动里悬着等十几分钟。
+//
+// version 可用 latest：优先取本地已缓存的最新版本，本地一份都没有才去问 GitHub。
+// 具体版本号通过 X-Frp-Version 响应头回传，便于 Agent 侧以确定版本号记账。
 //
 // 该端点免鉴权且 version 完全由 URL 控制，因此必须先做版本号白名单校验。
 func (h *InstallHandler) DownloadFRP(c *gin.Context) {
@@ -133,27 +134,37 @@ func (h *InstallHandler) DownloadFRP(c *gin.Context) {
 		arch = runtime.GOARCH
 	}
 
-	base := setting.Load(h.baseFallback()).FrpDownloadBase
-	path, err := distrib.EnsureFRPBinary(kind, version, osName, arch, filepath.Join(h.cfg.DataDir, "bin"), base)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "获取 " + kind + " 二进制失败：" + err.Error()})
+	binDir := h.binDir()
+	if version == distrib.LatestTag {
+		cached := distrib.CachedVersions(binDir, kind, osName, arch)
+		if len(cached) > 0 {
+			version = cached[0]
+		} else if latest, err := distrib.LatestVersion(); err == nil {
+			version = latest
+		} else {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "解析最新版本失败：" + err.Error()})
+			return
+		}
+	}
+
+	name := distrib.BinaryName(kind, version, osName, arch)
+	path := filepath.Join(binDir, name)
+	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "面板没有 " + kind + " " + version + "（" + osName + "/" + arch + "）的二进制，" +
+				"请先在面板「设置 → frp 二进制」里下载",
+		})
 		return
 	}
 
-	resolved := distrib.ParseBinaryName(filepath.Base(path), kind)
-	if resolved != "" {
-		c.Header("X-Frp-Version", resolved)
-	}
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filepath.Base(path)))
+	c.Header("X-Frp-Version", version)
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", name))
 	c.File(path)
 }
 
-// baseFallback 启动参数/环境变量提供的下载地址模板，作为设置表为空时的回退
-func (h *InstallHandler) baseFallback() string {
-	if h.cfg == nil {
-		return ""
-	}
-	return h.cfg.FRPDownloadBase
+// binDir 面板存放 frp 二进制的目录，与设置页的缓存清单、面板本机 frps 用的是同一个
+func (h *InstallHandler) binDir() string {
+	return filepath.Join(h.cfg.DataDir, "bin")
 }
 
 // panelURL 面板对外地址：优先取 -public-url，其次按请求推断
@@ -202,14 +213,33 @@ func (h *InstallHandler) agentImage() string {
 	return config.DefaultAgentImage
 }
 
+// frpVersionArg 面板记录的期望 frp 版本，写进安装命令/环境变量。
+// 为空（不管理）或格式不合法时返回空：此时 Agent 首次启动会去找面板的 latest。
+func frpVersionArg(agent *model.Agent) string {
+	v := strings.TrimSpace(agent.FRPVersion)
+	if !distrib.ValidVersion(v) {
+		return ""
+	}
+	return v
+}
+
 func binaryInstallCommand(panelURL string, agent *model.Agent, osName, roles, runtime string) string {
+	ver := frpVersionArg(agent)
 	switch {
 	case strings.HasPrefix(osName, "win"):
-		return fmt.Sprintf("powershell -ExecutionPolicy Bypass -Command \"irm %s/install.ps1 -OutFile install.ps1; .\\install.ps1 -Panel %s -NodeKey %s -NodeSecret %s -Roles %s -Runtime %s\"",
-			panelURL, panelURL, agent.NodeKey, agent.Secret, roles, runtime)
+		args := fmt.Sprintf("-Panel %s -NodeKey %s -NodeSecret %s -Roles %s -Runtime %s",
+			panelURL, agent.NodeKey, agent.Secret, roles, runtime)
+		if ver != "" {
+			args += " -FrpVersion " + ver
+		}
+		return fmt.Sprintf("powershell -ExecutionPolicy Bypass -Command \"irm %s/install.ps1 -OutFile install.ps1; .\\install.ps1 %s\"",
+			panelURL, args)
 	default:
 		args := fmt.Sprintf("--panel %s --node-key %s --secret %s --roles %s --runtime %s",
 			panelURL, agent.NodeKey, agent.Secret, roles, runtime)
+		if ver != "" {
+			args += " --frp-version " + ver
+		}
 		return fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- %s", panelURL, args)
 	}
 }
@@ -227,6 +257,10 @@ func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime, image
 		fmt.Sprintf("  -e DFPANEL_NODE_SECRET=%s \\", agent.Secret),
 		fmt.Sprintf("  -e DFPANEL_ROLES=%s \\", roles),
 		fmt.Sprintf("  -e DFPANEL_RUNTIME=%s \\", runtime),
+	}
+	// 期望版本一并带过去：Agent 首次启动按它去面板取二进制，而不是自己挑 latest
+	if ver := frpVersionArg(agent); ver != "" {
+		lines = append(lines, fmt.Sprintf("  -e DFPANEL_FRPVERSION=%s \\", ver))
 	}
 	if runtime == "docker" {
 		lines = append(lines,
@@ -251,6 +285,10 @@ func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, i
 			"      - /var/run/docker.sock:/var/run/docker.sock\n"
 		tail = ""
 	}
+	versionLine := ""
+	if ver := frpVersionArg(agent); ver != "" {
+		versionLine = "      DFPANEL_FRPVERSION: " + ver + "\n"
+	}
 	return fmt.Sprintf(`services:
   dfpanel-agent:
     image: %s
@@ -263,6 +301,6 @@ func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, i
       DFPANEL_NODE_SECRET: %s
       DFPANEL_ROLES: %s
       DFPANEL_RUNTIME: %s
-    volumes:
-%s%s`, image, panelURL, agent.NodeKey, agent.Secret, roles, runtime, volumes, tail)
+%s    volumes:
+%s%s`, image, panelURL, agent.NodeKey, agent.Secret, roles, runtime, versionLine, volumes, tail)
 }

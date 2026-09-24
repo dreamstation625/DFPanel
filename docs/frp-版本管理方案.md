@@ -12,10 +12,10 @@
 |---|---|---|
 | 版本粒度 | **每个 Agent 统一一个版本**（该 Agent 上的 frps 与 frpc 共用一个 frp 版本） | 版本成为 Agent 级属性，不是每实例属性；切换时该 Agent 全部实例一起生效 |
 | 面板本机 frps | 同样「统一一个版本」，在设置页配置 | 与 Agent 语义对称，无需在 `FrpsServer` 上加字段 |
-| Docker 运行时 | **支持版本替换**：镜像只当运行时底座，frp 版本由挂载的二进制决定 | 见第 4 节；镜像 tag 不再与 frp 版本绑定 |
+| Docker 运行时 | **支持版本替换**：镜像只当运行时底座（**底座镜像里不含 frp**），frp 版本完全由面板下发的二进制决定 | 见第 4 节；镜像 tag 与 frp 版本彻底无关 |
 | Agent 镜像构建 | 构建时解析最新版本（现状已是此行为） | `Dockerfile.agent` 无需改动，仍可 `--build-arg FRP_VERSION=x.y.z` 固定 |
 | 镜像源 | **支持配置**，并新增**面板设置页**可在线修改 | 新增设置表 + `views/Settings.vue` |
-| 存量数据（版本为空） | **不动**，只提示「可更新」 | 面板升级不会批量重启在跑的服务；docker 容器在未接管前继续用镜像自带的 frp |
+| 存量数据（版本为空） | **不动**，只提示「可更新」 | 面板升级不会批量重启在跑的服务；容器底座没有 frp，未下发前容器不会启动，界面上显示「未下发」 |
 | 手填版本号 | **保留**作为兜底 | 版本列表拉取失败 / 内网环境仍可用 |
 
 ## 2. 现状与必须先修的问题
@@ -197,7 +197,8 @@ POST /api/frp/local/activate       # 面板本机切换并重启全部本机 frp
 
 ## 5.1 Docker 运行时的版本替换（第 4 节）
 
-镜像只作为**运行时底座**，frp 二进制由宿主机挂进容器，版本与镜像 tag 彻底解耦：
+镜像只作为**运行时底座**（默认 `alpine:3.20`，可用 `DFPANEL_FRPS_IMAGE` / `DFPANEL_FRPC_IMAGE` 覆盖），
+frp 二进制由宿主机挂进容器，版本与镜像 tag 彻底解耦：
 
 ```
 docker run -d --name dfpanel-frps-1 --restart unless-stopped \
@@ -205,28 +206,29 @@ docker run -d --name dfpanel-frps-1 --restart unless-stopped \
   -v <dataDir>/frps-1.json:<dataDir>/frps-1.json:ro \
   -v <dataDir>/bin/frps-container-linux-amd64:/dfpanel-frps:ro \
   --entrypoint /dfpanel-frps \
-  snowdreamtech/frps:latest -c <dataDir>/frps-1.json
+  alpine:3.20 -c <dataDir>/frps-1.json
 ```
 
 几个关键设计点：
 
 1. **显式 `--entrypoint` 指到我们自己的固定路径**（`/dfpanel-frps`、`/dfpanel-frpc`），
-   不去猜镜像里的二进制位置与入口，因此对**任意** frp 镜像都成立（甚至可换成 alpine / busybox ——
-   官方 frp 是 `CGO_ENABLED=0` 静态编译）。
+   不去猜镜像里的二进制位置与入口，因此对**任意**底座镜像都成立（官方 frp 是
+   `CGO_ENABLED=0` 静态编译，alpine / busybox 都能跑）。
 2. **容器内路径刻意用单层**（`/dfpanel-frps` 而非 `/opt/dfpanel/frps`）：挂载单个文件时
    不依赖 Docker 创建多级父目录。
 3. **容器槽位独立于 process 槽位**：`<binDir>/<kind>-container-<os>-<arch>`，
    与 process 的 `<dataDir>/<kind>[.exe]` 分开。同一台机器上两种运行时可并存，
    也避免 Windows 宿主上 `.exe` 后缀污染容器二进制。
-4. **槽位不存在就不介入**：`startDocker` 只在容器槽位存在时才挂载 + 覆盖 entrypoint，
-   否则容器继续用镜像自带的 frp —— 存量 docker 部署零影响，与「版本为空即不动」一致。
+4. **强制由面板下发，没有第二条退路**：底座镜像里没有 frp，`startDocker` 先过
+   `requireMountedBinary`，槽位缺失或 docker 不可用就直接报错（提示去「设置 → frp 二进制」下载），
+   不会静默跑起一个版本不明的 frp。因此界面上只会出现「未下发」，不再有「镜像自带」。
 5. **平台按容器探测**，不是宿主平台：用 `docker info --format '{{.OSType}}/{{.Architecture}}'`
    （`x86_64→amd64`、`aarch64→arm64`），因为 Windows/macOS 的 Docker Desktop 跑的是 Linux 容器，
    必须下载 linux/amd64 的 frp。结果缓存 5 分钟。
 6. **不自检 `-v`**：宿主可能根本执行不了 linux 二进制，`DownloadBinary` 的自检逻辑
    「只在能跑起来时才校验」，跨平台时自动跳过，版本正确性交给容器启动后的日志与健康探测。
 7. activate 流程与 process 完全一致：停容器 → 换槽位 → 重建容器 → `waitHealthy` 三态；
-   失败则把槽位切回旧版本重建；原先是「未接管」状态则删除槽位，回到镜像自带。
+   失败则把槽位切回旧版本重建；原先就没有槽位的则删除槽位（回到「未下发」，等面板下发后再启动）。
 
 ## 6. 验收要点
 
@@ -307,14 +309,37 @@ docker run -d --name dfpanel-frps-1 --restart unless-stopped \
   期望版本只写进记录。
 - 前端：`Settings.vue` 新增「frp 二进制（供 Agent 下载）」卡片（版本下拉 + 类型多选 + 平台下拉 + 下载按钮 + 缓存清单表格）；
   `FrpVersionPicker.vue` 在 Agent 模式下隐藏「仅下载」按钮、关闭自动预取；`Agents.vue` / `Nodes.vue`
-  未接管时的文案改为「未下载」/「镜像自带（未接管）」，创建提示改为「先到设置页下载再到 Agent 上切换」。
+  未接管时的文案改为「未下发」（当时还是「未下载」/「镜像自带（未接管）」，第四轮统一），
+  创建提示改为「先到设置页下载再到 Agent 上切换」。
 - 单测：`internal/distrib/cache_test.go`（清单扫描、平台反解、删除与越界防护）、
   `internal/handler/frpver_cache_test.go`（面板缺缓存时切换被拒、已放行场景）。
 - 重新构建：`output/dfpanel-{windows,linux}-amd64`、`output/dfpanel-agent-{windows,linux}-amd64`。
 
+### 容器底座不再内置 frp（第四轮追加，2026-09-24）
+
+docker 运行时以前允许「没接管就沿用镜像自带的 frp」（镜像 `snowdreamtech/frps|frpc:latest`），
+结果是面板上看到「镜像自带」这种没有版本信息的状态，版本也不受控。现改为**容器底座里不含 frp，
+一律由面板下发**：
+
+- 底座镜像默认换成 `alpine:3.20`（`DefaultFrpsImage` / `DefaultFrpcImage`，仍可用
+  `DFPANEL_FRPS_IMAGE` / `DFPANEL_FRPC_IMAGE` 覆盖），不再依赖第三方镜像里的 frp。
+- 新增 `requireMountedBinary`：`startDocker` 启动前必须确认容器槽位里的二进制可挂载，
+  否则直接返回错误（提示去「设置 → frp 二进制」下载）；`Spec.MountErr` 把
+  「docker 不可用 / 槽位没就绪」的具体原因带到面板，不再笼统报缺文件。
+- `/downloads/:kind/:version/:os/:arch` 只发面板已缓存的二进制：不再替 Agent 现抓上游，
+  缺什么就 404 并说明「请先在设置页下载」；`latest` 优先命中本地已缓存的最新版本。
+- 安装命令与安装脚本把面板记录的期望版本一起带下去（`--frp-version` / `-FrpVersion` /
+  `DFPANEL_FRPVERSION`），Agent 首次启动按它取二进制，而不是自己挑 latest；
+  安装脚本里原先 `curl .../downloads/frpc/latest/...` 的预置下载（新语义下只会静默 404）已移除。
+- 前端：Agent 管理 / 客户端节点 / 服务端配置的版本列改为「未下发」（不再有「镜像自带」），
+  未下发时带提示说明先去设置页下载；版本弹窗的 docker 说明同步。
+- 单测：`internal/agent/runtime_test.go` 增加 `TestRequireMountedBinary`；
+  新增 `internal/handler/install_test.go`（只发已缓存、latest 命中本地、版本白名单、
+  安装命令携带期望版本）。
+
 ### 本轮未覆盖（需在有 docker 的机器上验证）
 
-- 真实 `docker run` 挂载 + `--entrypoint` 在具体镜像（如 `snowdreamtech/frps`）上的运行结果；
+- 真实 `docker run` 挂载 + `--entrypoint` 在 alpine 底座上的运行结果；
   本机无 docker，只能靠参数构造的单测保证正确性。
 - 容器内运行被挂载的 linux frp 二进制时的可执行权限（宿主文件 0755，一般没问题；
   若宿主是 Windows，Docker Desktop 的挂载权限与 exec 行为需实测）。

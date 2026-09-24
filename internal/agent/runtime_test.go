@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -16,17 +17,18 @@ func indexOf(list []string, want string) int {
 	return -1
 }
 
+// 没有可挂载的二进制时，纯函数不注入 --entrypoint（真正的拦截在 requireMountedBinary，
+// 见 TestRequireMountedBinary）
 func TestDockerRunArgsWithoutMountedBinary(t *testing.T) {
 	spec := Spec{
 		Kind:          "frps",
 		Runtime:       "docker",
-		Image:         "snowdreamtech/frps:latest",
+		Image:         DefaultFrpsImage,
 		ConfigPath:    "/var/lib/dfpanel-agent/frps-1.json",
 		ContainerName: "dfpanel-frps-1",
 	}
 	args := dockerRunArgs(spec, spec.Image, true)
 
-	// 未接管时不得介入：不能出现 --entrypoint，也不能出现额外的二进制挂载
 	if indexOf(args, "--entrypoint") >= 0 {
 		t.Errorf("未挂载二进制时不应出现 --entrypoint：%v", args)
 	}
@@ -56,7 +58,7 @@ func TestDockerRunArgsWithMountedBinary(t *testing.T) {
 	spec := Spec{
 		Kind:          "frps",
 		Runtime:       "docker",
-		Image:         "snowdreamtech/frps:latest",
+		Image:         DefaultFrpsImage,
 		ConfigPath:    "/var/lib/dfpanel-agent/frps-1.json",
 		ContainerName: "dfpanel-frps-1",
 		MountBinary:   slot,
@@ -96,7 +98,7 @@ func TestDockerRunArgsFrpcUsesOwnMountPoint(t *testing.T) {
 		ContainerName: "dfpanel-frpc-7",
 		MountBinary:   slot,
 	}
-	args := dockerRunArgs(spec, "snowdreamtech/frpc:latest", false)
+	args := dockerRunArgs(spec, DefaultFrpcImage, false)
 
 	if indexOf(args, ContainerFrpcPath) < 0 {
 		t.Errorf("frpc 应挂到 %s：%v", ContainerFrpcPath, args)
@@ -111,7 +113,7 @@ func TestDockerRunArgsFrpcUsesOwnMountPoint(t *testing.T) {
 }
 
 func TestDockerRunArgsIgnoresEmptyMountFile(t *testing.T) {
-	// 空文件视为无效槽位，不能拿它去覆盖镜像自带 frp（否则容器直接起不来）
+	// 空文件视为无效槽位：不能拿它当 entrypoint（容器会直接起不来）
 	dir := t.TempDir()
 	slot := filepath.Join(dir, "frps-container-linux-amd64")
 	if err := os.WriteFile(slot, nil, 0o755); err != nil {
@@ -119,11 +121,52 @@ func TestDockerRunArgsIgnoresEmptyMountFile(t *testing.T) {
 	}
 	spec := Spec{
 		Kind:        "frps",
+		Runtime:     "docker",
 		ConfigPath:  "/c.json",
 		MountBinary: slot,
 	}
 	args := dockerRunArgs(spec, "img:latest", false)
 	if indexOf(args, "--entrypoint") >= 0 {
 		t.Errorf("空槽位文件不应触发覆盖：%v", args)
+	}
+	if err := requireMountedBinary(spec); err == nil {
+		t.Error("空槽位文件应当被拦下")
+	}
+}
+
+// 容器底座镜像里没有 frp：没有面板下发的二进制就不许起容器，
+// 且要把「为什么没有」讲清楚（docker 不可用 / 槽位没就绪）
+func TestRequireMountedBinary(t *testing.T) {
+	dir := t.TempDir()
+	slot := filepath.Join(dir, "frpc-container-linux-amd64")
+	if err := os.WriteFile(slot, []byte("fake-frpc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := requireMountedBinary(Spec{Kind: "frpc", Runtime: "process", BinPath: slot}); err != nil {
+		t.Fatalf("process 运行时不该受容器约束：%v", err)
+	}
+	if err := requireMountedBinary(Spec{Kind: "frpc", Runtime: "docker", MountBinary: slot}); err != nil {
+		t.Fatalf("挂载就绪时应当放行：%v", err)
+	}
+
+	err := requireMountedBinary(Spec{Kind: "frpc", Runtime: "docker"})
+	if err == nil {
+		t.Fatal("没挂载二进制时应当报错")
+	}
+	for _, want := range []string{"frpc", "设置"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误提示应包含 %q，实际：%v", want, err)
+		}
+	}
+
+	// 平台探测失败（docker 不可用）时要把原始原因透出，而不是笼统说缺文件
+	err = requireMountedBinary(Spec{
+		Kind:     "frpc",
+		Runtime:  "docker",
+		MountErr: "无法探测 docker 容器平台（docker info 失败）：Cannot connect to the Docker daemon",
+	})
+	if err == nil || !strings.Contains(err.Error(), "Docker daemon") {
+		t.Fatalf("应透出平台探测失败的原因，实际：%v", err)
 	}
 }

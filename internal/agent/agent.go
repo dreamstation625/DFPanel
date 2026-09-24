@@ -352,12 +352,19 @@ func (a *Agent) controller(t Target) *Controller {
 		ContainerName: ContainerName(kind, t.ID),
 	}
 	if a.cfg.Runtime == "docker" {
-		// 容器槽位存在时挂载宿主机二进制并覆盖 entrypoint；不存在则沿用镜像自带的 frp。
-		// 平台探测失败（如 docker 不可用）就不介入，交由镜像决定。
-		if cos, carch, err := containerPlatform(); err == nil {
+		// 容器底座里没有 frp：必须挂上面板下发的二进制才起得来。
+		// 槽位没就绪（面板还没下发过、或 docker 不可用）时记下原因，
+		// 启动那一步会直接拒绝，不做任何静默回退。
+		cos, carch, err := containerPlatform()
+		switch {
+		case err != nil:
+			spec.MountErr = err.Error()
+		default:
 			slot := a.cfg.ContainerSlotPath(kind, cos, carch)
-			if fi, statErr := os.Stat(slot); statErr == nil && fi.Size() > 0 {
+			if fileReady(slot) {
 				spec.MountBinary = slot
+			} else {
+				spec.MountErr = fmt.Sprintf("容器槽位 %s 还没有二进制，%s 尚未由面板下发", slot, kind)
 			}
 		}
 	}

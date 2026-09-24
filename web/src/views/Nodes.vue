@@ -34,7 +34,7 @@ const frpTarget = ref<AgentInfo | null>(null)
 function frpVersionOf(agentId: number) {
   const a = agents.value.find((x) => x.id === agentId)
   if (!a) return '未知'
-  if (!a.frpInstalledVersion) return a.runtime === 'docker' ? '镜像自带（未接管）' : '未下载'
+  if (!a.frpInstalledVersion) return '未下发'
   return a.frpInstalledVersion
 }
 

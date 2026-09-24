@@ -28,10 +28,14 @@ type Config struct {
 	FrpcImage string `json:"frpc_image"`
 }
 
-// DefaultImages 默认使用社区维护的 frp 官方镜像
+// DefaultImages docker 运行时的容器底座镜像。
+//
+// 底座里刻意不带 frp：二进制一律由面板下发并挂载进容器（见 Spec.MountBinary），
+// 这样版本才完全受控，不会出现「容器跑的是镜像里那个版本不明的 frp」的情况。
+// alpine 只为提供一个能跑静态二进制的极简环境，可用 DFPANEL_FRPS_IMAGE / DFPANEL_FRPC_IMAGE 覆盖。
 const (
-	DefaultFrpsImage = "snowdreamtech/frps:latest"
-	DefaultFrpcImage = "snowdreamtech/frpc:latest"
+	DefaultFrpsImage = "alpine:3.20"
+	DefaultFrpcImage = "alpine:3.20"
 )
 
 // LoadConfig 读取配置文件，并用环境变量覆盖
@@ -208,7 +212,7 @@ const (
 	ContainerFrpcPath = "/dfpanel-frpc"
 )
 
-// ContainerBinaryInContainer 容器内用于运行 frp 的路径（与镜像自带的入口无关）
+// ContainerBinaryInContainer 容器内用于运行 frp 的路径（底座镜像里没有 frp，与它无关）
 func ContainerBinaryInContainer(kind string) string {
 	if kind == "frps" {
 		return ContainerFrpsPath
@@ -230,7 +234,7 @@ func (c *Config) ContainerVersionSidecar(kind, goos, goarch string) string {
 	return filepath.Join(c.BinDir(), fmt.Sprintf("%s-container-%s-%s.version", kind, goos, goarch))
 }
 
-// ContainerSlotVersion 容器槽位当前生效的 frp 版本（空表示仍在使用镜像自带的 frp）
+// ContainerSlotVersion 容器槽位当前生效的 frp 版本（空表示面板还没下发过二进制）
 func (c *Config) ContainerSlotVersion(kind, goos, goarch string) string {
 	return distrib.ActiveVersion(c.ContainerSlotPath(kind, goos, goarch), c.ContainerVersionSidecar(kind, goos, goarch))
 }

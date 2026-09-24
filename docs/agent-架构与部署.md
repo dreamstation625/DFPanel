@@ -137,7 +137,9 @@ docker run -d --name dfpanel-agent --restart unless-stopped \
   dreamstation625/dfpanel-agent:latest
 ```
 
-镜像不内置 frp：frp 二进制由面板下发（面板侧抓取并缓存），Agent 首次需要时自动下载到数据目录 `bin/`。
+镜像不内置 frp：frp 二进制由面板下发，Agent 首次需要时按面板记录的期望版本下载到数据目录 `bin/`。
+面板侧不再替 Agent 现抓上游（抓取一律在「设置 → frp 二进制」由管理员触发），面板没备好时
+Agent 会明确报错提示先去设置页下载。
 
 ### 5.3 frps / frpc 容器化运行（runtime=docker）
 

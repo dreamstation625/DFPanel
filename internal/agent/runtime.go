@@ -22,9 +22,39 @@ type Spec struct {
 	// PidPath 子进程 pid 文件：Agent 重启后据此接管仍在运行的实例（docker 运行时不用）
 	PidPath       string
 	ContainerName string
-	// MountBinary docker 运行时专用：宿主机上的 frp 二进制，挂进容器并覆盖 entrypoint。
-	// 为空表示不介入，容器沿用镜像自带的 frp（存量部署保持原行为）。
+	// MountBinary docker 运行时专用：宿主机上由面板下发的 frp 二进制，挂进容器并覆盖 entrypoint。
+	// 底座镜像里没有 frp，所以它必须存在 —— 缺失时容器直接起不来（见 requireMountedBinary）。
 	MountBinary string
+	// MountErr 拿不到 MountBinary 的原因（docker 不可用 / 容器平台不支持 / 槽位尚未就绪），
+	// 用于把「为什么起不来」讲清楚，而不是笼统报一句缺文件。
+	MountErr string
+}
+
+// fileReady 文件存在且非空（0 字节的槽位文件视为没有）
+func fileReady(path string) bool {
+	if path == "" {
+		return false
+	}
+	fi, err := os.Stat(path)
+	return err == nil && fi.Size() > 0
+}
+
+// requireMountedBinary 容器运行时必须挂着面板下发的 frp 二进制。
+//
+// 底座镜像（alpine 之类）不含 frp，没有第二条退路：缺了就是起不来，
+// 要的是在面板上直接看到「先去设置页下载」，而不是静默跑起一个版本不明的 frp。
+func requireMountedBinary(spec Spec) error {
+	if spec.Runtime != "docker" {
+		return nil
+	}
+	if spec.MountErr != "" {
+		return fmt.Errorf("%s 容器无法启动：%s", spec.Kind, spec.MountErr)
+	}
+	if !fileReady(spec.MountBinary) {
+		return fmt.Errorf("%s 容器无法启动：面板下发的 frp 二进制不存在（%s），"+
+			"请先在面板「设置 → frp 二进制」里按平台下载", spec.Kind, spec.MountBinary)
+	}
+	return nil
 }
 
 // Controller 负责单个 frps / frpc 的启停与日志，屏蔽「进程 / 容器」两种运行时差异
@@ -113,6 +143,11 @@ func (c *Controller) startProcess() error {
 }
 
 func (c *Controller) startDocker() error {
+	// 底座镜像里没有 frp，没挂上面板下发的二进制就别起容器
+	if err := requireMountedBinary(c.spec); err != nil {
+		return err
+	}
+
 	// 容器不可变：每次启动前移除旧容器，保证使用新配置
 	_ = exec.Command("docker", "rm", "-f", c.spec.ContainerName).Run()
 
@@ -135,9 +170,9 @@ func (c *Controller) startDocker() error {
 // 拆成纯函数是为了能在没有 docker 的环境下单测校验参数顺序
 // （--entrypoint 必须位于镜像名之前，`-c 配置` 必须位于镜像名之后）。
 //
-// 版本替换：把宿主机上的 frp 二进制挂进容器，并显式覆盖 entrypoint 指到它。
-// 不猜镜像里的二进制路径，因此对任意 frp 镜像都成立（镜像只当运行时底座）；
-// MountBinary 为空时不介入，容器继续用镜像自带的 frp —— 存量 docker 部署零影响。
+// frp 二进制由面板下发：把宿主机上的文件挂进容器，并显式覆盖 entrypoint 指到它。
+// 不猜镜像里的二进制路径，因此对任意底座镜像都成立；底座里没有 frp，
+// 所以这一步不是「可选增强」，缺失时 startDocker 会先行拒绝。
 func dockerRunArgs(spec Spec, image string, hostNetwork bool) []string {
 	args := []string{"run", "-d", "--name", spec.ContainerName, "--restart", "unless-stopped",
 		"-v", fmt.Sprintf("%s:%s:ro", spec.ConfigPath, spec.ConfigPath)}

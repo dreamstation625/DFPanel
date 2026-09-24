@@ -47,7 +47,7 @@ const frpVersionText = computed(() => {
   if (form.value.deployMode === 'agent') {
     const a = agents.value.find((item) => item.id === form.value.agentId)
     if (!a) return '未绑定 Agent'
-    if (!a.frpInstalledVersion) return a.runtime === 'docker' ? '镜像自带' : '未知'
+    if (!a.frpInstalledVersion) return '未下发'
     return a.frpInstalledVersion
   }
   return localFrp.value?.active || '未安装'

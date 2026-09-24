@@ -35,9 +35,9 @@ function onFrpClosed() {
   if (a) window.setTimeout(() => openInstall(a), 200)
 }
 
-/** frp 版本展示：优先显示实际生效版本，未接管时按运行时给出说明 */
+/** frp 版本展示：优先显示实际生效版本，面板还没下发过就是「未下发」（容器底座里没有 frp） */
 function frpLabel(a: AgentInfo) {
-  if (!a.frpInstalledVersion) return a.runtime === 'docker' ? '镜像自带（未接管）' : '未下载'
+  if (!a.frpInstalledVersion) return '未下发'
   return a.frpInstalledVersion
 }
 
@@ -305,7 +305,13 @@ onMounted(load)
         </el-table-column>
         <el-table-column label="frp 版本" width="150">
           <template #default="{ row }">
-            <div>{{ frpLabel(row) }}</div>
+            <el-tooltip
+              :disabled="!!row.frpInstalledVersion"
+              content="面板还没给这台 Agent 下发 frp 二进制（容器底座镜像里不含 frp）：先去「设置 → frp 二进制」按平台下载，再到「frp 版本」里切换"
+              placement="top"
+            >
+              <div>{{ frpLabel(row) }}</div>
+            </el-tooltip>
             <div v-if="row.frpVersion" class="sub">期望 {{ row.frpVersion }}</div>
             <el-tag v-if="frpNeedsUpdate(row)" size="small" type="warning" style="margin-top: 2px">可更新</el-tag>
           </template>

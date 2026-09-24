@@ -424,7 +424,8 @@ func (a *Agent) restartTargets(targets []Target, runningBefore map[string]bool) 
 	return "回滚后仍有实例未就绪：" + strings.Join(failed, "；")
 }
 
-// restoreActive 把 active 槽位恢复到切换前的版本；原先没有槽位的则清除（回到镜像/系统自带）
+// restoreActive 把 active 槽位恢复到切换前的版本；原先就没有槽位的则清除。
+// 清除后即「尚未由面板下发」状态：容器底座里没有 frp，起不来，等面板下发后再启动。
 func (a *Agent) restoreActive(oldVersions, slots map[string]string, kinds []string, goos, goarch string) error {
 	errs := []string{}
 	for _, kind := range kinds {
@@ -458,7 +459,7 @@ func (a *Agent) cachedOnly() []string {
 func describeVersions(oldVersions map[string]string, kinds []string) string {
 	parts := make([]string, 0, len(kinds))
 	for _, kind := range kinds {
-		parts = append(parts, emptyAs(oldVersions[kind], "镜像自带"))
+		parts = append(parts, emptyAs(oldVersions[kind], "未下发"))
 	}
 	return strings.Join(parts, " / ")
 }

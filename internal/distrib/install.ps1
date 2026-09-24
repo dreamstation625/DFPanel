@@ -12,6 +12,8 @@ param(
     [string]$NodeSecret,
     [string]$Roles = "frpc",
     [ValidateSet("process", "docker")][string]$Runtime = "process",
+    # 期望的 frp 版本，由面板在安装命令里带上；留空表示不指定，Agent 启动时取面板的 latest
+    [string]$FrpVersion = "",
     [switch]$Uninstall,
     [switch]$Purge
 )
@@ -98,22 +100,19 @@ Invoke-WebRequest -Uri "$Panel/downloads/agent/windows/$arch" -OutFile $ExePath 
 
 Write-Host "==> 写入 Agent 配置"
 $config = [ordered]@{
-    panel_url = $Panel
-    node_key  = $NodeKey
-    secret    = $NodeSecret
-    roles     = $Roles
-    runtime   = $Runtime
-    data_dir  = $DataDir
+    panel_url   = $Panel
+    node_key    = $NodeKey
+    secret      = $NodeSecret
+    roles       = $Roles
+    runtime     = $Runtime
+    frp_version = $FrpVersion
+    data_dir    = $DataDir
 } | ConvertTo-Json -Depth 4
 
 [System.IO.File]::WriteAllText($ConfigPath, $config, (New-Object System.Text.UTF8Encoding $false))
 
-if ($Roles -match "frpc") {
-    try { Invoke-WebRequest -Uri "$Panel/downloads/frpc/latest/windows/$arch" -OutFile (Join-Path $DataDir "frpc.exe") -UseBasicParsing } catch { }
-}
-if ($Roles -match "frps") {
-    try { Invoke-WebRequest -Uri "$Panel/downloads/frps/latest/windows/$arch" -OutFile (Join-Path $DataDir "frps.exe") -UseBasicParsing } catch { }
-}
+# frp 二进制不在这里预置：一律由 Agent 启动时按上面的版本从面板取，
+# 面板没备好会明确报错提示去「设置 → frp 二进制」下载，不在这里静默失败。
 
 # 未引入第三方服务包装器，用计划任务实现开机自启与后台常驻
 Write-Host "==> 注册计划任务 $TaskName（开机自启）"
