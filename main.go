@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"dfpanel/internal/agentbundle"
 	"dfpanel/internal/config"
 	"dfpanel/internal/database"
 	"dfpanel/internal/router"
@@ -19,6 +20,20 @@ import (
 var version = "dev"
 
 func main() {
+	if len(os.Args) == 4 && os.Args[1] == "-prepare-agent-bundle" {
+		agentVersion, err := agentbundle.Install(os.Args[2], os.Args[3], version)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(agentVersion)
+		return
+	}
+	if len(os.Args) == 4 && os.Args[1] == "-activate-agent-bundle" {
+		if err := agentbundle.Activate(os.Args[2], os.Args[3]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	// -version 直接输出到 stdout，便于脚本解析（不带日志时间戳）
 	if len(os.Args) > 1 && (os.Args[1] == "-version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
 		fmt.Printf("dfpanel %s\n", version)

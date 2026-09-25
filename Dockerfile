@@ -1,4 +1,4 @@
-# DFPanel 面板镜像（一体化：面板 + 内置 frps 二进制）
+# DFPanel 面板镜像（一体化：面板 + 内置 frps 和 Agent 二进制）
 # 构建：docker build -t dreamstation625/dfpanel:latest .
 # 运行：docker run -d --network host -v dfpanel-data:/data -e DFPANEL_PUBLIC_URL=http://1.2.3.4:7226 dreamstation625/dfpanel:latest
 
@@ -54,7 +54,21 @@ COPY . .
 COPY --from=web /web/dist ./web/dist
 # 版本号取自根目录 VERSION 文件，注入二进制
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
-    -ldflags "-X main.version=$(cat VERSION)" -o /out/dfpanel .
+    -ldflags "-X main.version=$(tr -d '[:space:]' < VERSION)" -o /out/dfpanel .
+
+# 面板直接分发同一源码版本的 Agent，Docker 部署无需手动上传文件或依赖 GitHub Release。
+# 构建 Linux、Windows、macOS 安装脚本当前支持的平台。
+RUN set -eux; \
+    mkdir -p /out/agent; \
+    AGENT_VERSION="$(tr -d '[:space:]' < VERSION.agent)"; \
+    for platform in linux/amd64 linux/arm64 linux/arm windows/amd64 windows/386 darwin/amd64 darwin/arm64; do \
+      os="${platform%/*}"; arch="${platform#*/}"; ext=""; goarm=""; \
+      [ "$os" != windows ] || ext=.exe; \
+      [ "$arch" != arm ] || goarm=6; \
+      CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" GOARM="$goarm" go build -trimpath \
+        -ldflags "-X dfpanel/internal/agent.Version=${AGENT_VERSION}" \
+        -o "/out/agent/agent-${os}-${arch}${ext}" ./cmd/agent; \
+    done
 
 # ---------- 4. 运行 ----------
 FROM alpine:3.20
@@ -64,6 +78,8 @@ ENV DFPANEL_LISTEN=:7226 \
     TZ=Asia/Shanghai
 WORKDIR /app
 COPY --from=server /out/dfpanel /usr/local/bin/dfpanel
+COPY --from=server /out/agent/ /usr/local/share/dfpanel/agent/
+COPY VERSION.agent /usr/local/share/dfpanel/agent/VERSION.agent
 COPY --from=frp /out/frps /usr/local/bin/frps
 VOLUME ["/data"]
 # 7226 面板 / 7000 frps / 7500 dashboard / 80,443 vhost（host 网络时无需映射）

@@ -1,6 +1,9 @@
 package handler
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +30,99 @@ func newFRPCtx(kind, version, goos, goarch string) (*gin.Context, *httptest.Resp
 		{Key: "arch", Value: goarch},
 	}
 	return c, rec
+}
+
+func newAgentDownloadCtx(goos, goarch string) (*gin.Context, *httptest.ResponseRecorder) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/downloads/agent/"+goos+"/"+goarch, nil)
+	c.Params = gin.Params{{Key: "os", Value: goos}, {Key: "arch", Value: goarch}}
+	return c, rec
+}
+
+func TestDownloadAgentUsesBundledBinaryAndAllowsDataOverride(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := NewInstallHandler(&config.Config{DataDir: t.TempDir()})
+	h.bundledAgentDir = t.TempDir()
+	name := "agent-linux-amd64"
+	bundled := filepath.Join(h.bundledAgentDir, name)
+	if err := os.WriteFile(bundled, []byte("bundled-agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.bundledAgentDir, "VERSION.agent"), []byte("0.0.1-beta.18"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c, rec := newAgentDownloadCtx("linux", "amd64")
+	h.DownloadAgent(c)
+	if rec.Code != http.StatusOK || rec.Body.String() != "bundled-agent" {
+		t.Fatalf("应使用镜像内置 Agent，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Agent-Version") != "0.0.1-beta.18" || len(rec.Header().Get("X-Agent-SHA256")) != 64 {
+		t.Fatal("下载响应应提供 Agent 版本及 SHA256")
+	}
+
+	customDir := filepath.Join(h.cfg.DataDir, "bin")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(customDir, name), []byte("custom-agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c, rec = newAgentDownloadCtx("linux", "amd64")
+	h.DownloadAgent(c)
+	if rec.Code != http.StatusOK || rec.Body.String() != "bundled-agent" {
+		t.Fatalf("镜像内置 Agent 应优先于旧数据目录文件，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	if err := os.Remove(bundled); err != nil {
+		t.Fatal(err)
+	}
+	c, rec = newAgentDownloadCtx("linux", "amd64")
+	h.DownloadAgent(c)
+	if rec.Code != http.StatusOK || rec.Body.String() != "custom-agent" {
+		t.Fatalf("二进制面板应兼容旧数据目录 Agent，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+
+	c, rec = newAgentDownloadCtx("linux", "386")
+	h.DownloadAgent(c)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("不支持的平台应返回 400，实际 %d", rec.Code)
+	}
+}
+
+func TestDownloadAgentUsesActiveBinaryBundle(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dataDir := t.TempDir()
+	h := NewInstallHandler(&config.Config{DataDir: dataDir})
+	h.bundledAgentDir = t.TempDir()
+	bundleDir := filepath.Join(dataDir, "agent-bundles", "0.0.1-beta.19")
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("release-agent"))
+	metadata := fmt.Sprintf(`{"panelVersion":"0.0.1-beta.19","agentVersion":"0.0.1-beta.18","files":{"agent-linux-amd64":"%s"}}`, hex.EncodeToString(sum[:]))
+	if err := os.WriteFile(filepath.Join(bundleDir, "manifest.json"), []byte(metadata), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "agent-linux-amd64"), []byte("release-agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "agent-bundles", "current"), []byte("0.0.1-beta.19"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, rec := newAgentDownloadCtx("linux", "amd64")
+	h.DownloadAgent(c)
+	if rec.Code != http.StatusOK || rec.Body.String() != "release-agent" || rec.Header().Get("X-Agent-Version") != "0.0.1-beta.18" {
+		t.Fatalf("二进制面板应分发已激活 Agent：%d %s", rec.Code, rec.Body.String())
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "agent-linux-amd64"), []byte("damaged"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c, rec = newAgentDownloadCtx("linux", "amd64")
+	h.DownloadAgent(c)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("损坏的 Agent 文件不得下发：%d", rec.Code)
+	}
 }
 
 // 分发端点只发面板已有的二进制：缺了直接 404 并说清去哪下载，不替 Agent 去抓上游。

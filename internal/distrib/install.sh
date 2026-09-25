@@ -139,8 +139,27 @@ echo "==> 操作系统: $OS/$ARCH，角色: $ROLES，运行时: $RUNTIME"
 mkdir -p "$INSTALL_DIR" "$CONF_DIR" "$DATA_DIR"
 
 echo "==> 下载 Agent 二进制"
-curl -fsSL "$PANEL/downloads/agent/$OS/$ARCH" -o "$INSTALL_DIR/dfpanel-agent"
-chmod +x "$INSTALL_DIR/dfpanel-agent"
+AGENT_TMP="$(mktemp "$INSTALL_DIR/.dfpanel-agent.XXXXXX")"
+HEADERS_TMP="$(mktemp)"
+trap 'rm -f "$AGENT_TMP" "$HEADERS_TMP"' EXIT
+curl -fsSL -D "$HEADERS_TMP" "$PANEL/downloads/agent/$OS/$ARCH" -o "$AGENT_TMP"
+EXPECTED_SHA="$(awk 'tolower($1)=="x-agent-sha256:" { gsub("\r", "", $2); print $2 }' "$HEADERS_TMP" | tail -n 1)"
+[[ "$EXPECTED_SHA" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "面板未返回有效的 Agent SHA256" >&2; exit 1; }
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL_SHA="$(sha256sum "$AGENT_TMP" | awk '{print $1}')"
+else
+  ACTUAL_SHA="$(shasum -a 256 "$AGENT_TMP" | awk '{print $1}')"
+fi
+[[ "$(printf '%s' "$ACTUAL_SHA" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$EXPECTED_SHA" | tr '[:upper:]' '[:lower:]')" ]] || { echo "Agent 下载文件 SHA256 不匹配" >&2; exit 1; }
+chmod +x "$AGENT_TMP"
+EXPECTED_VERSION="$(awk 'tolower($1)=="x-agent-version:" { gsub("\r", "", $2); print $2 }' "$HEADERS_TMP" | tail -n 1)"
+if [[ -n "$EXPECTED_VERSION" ]]; then
+  VERSION_OUTPUT="$("$AGENT_TMP" -version 2>&1)" || { echo "下载的 Agent 无法运行" >&2; exit 1; }
+  [[ "$VERSION_OUTPUT" == *"dfpanel-agent $EXPECTED_VERSION"* ]] || { echo "Agent 程序版本与面板分发版本不一致" >&2; exit 1; }
+fi
+mv -f "$AGENT_TMP" "$INSTALL_DIR/dfpanel-agent"
+trap - EXIT
+rm -f "$HEADERS_TMP"
 
 echo "==> 写入 Agent 配置 $CONF_DIR/agent.json"
 cat > "$CONF_DIR/agent.json" <<EOF

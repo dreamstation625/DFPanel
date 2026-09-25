@@ -96,7 +96,47 @@ New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
 
 Write-Host "==> 下载 Agent 二进制"
-Invoke-WebRequest -Uri "$Panel/downloads/agent/windows/$arch" -OutFile $ExePath -UseBasicParsing
+$tempExe = Join-Path $BaseDir (".dfpanel-agent-" + [guid]::NewGuid().ToString("N") + ".exe")
+try {
+    $response = Invoke-WebRequest -Uri "$Panel/downloads/agent/windows/$arch" -OutFile $tempExe -UseBasicParsing -PassThru
+    $expectedSha = [string]$response.Headers["X-Agent-SHA256"]
+    if ($expectedSha -notmatch '^[0-9a-fA-F]{64}$') { throw "面板未返回有效的 Agent SHA256" }
+    $actualSha = (Get-FileHash -LiteralPath $tempExe -Algorithm SHA256).Hash
+    if (-not [string]::Equals($actualSha, $expectedSha, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Agent 下载文件 SHA256 不匹配"
+    }
+    $expectedVersion = [string]$response.Headers["X-Agent-Version"]
+    if ($expectedVersion) {
+        $versionStdout = Join-Path $BaseDir ".agent-version.out"
+        $versionStderr = Join-Path $BaseDir ".agent-version.err"
+        try {
+            $versionProcess = Start-Process -FilePath $tempExe -ArgumentList "-version" -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $versionStdout -RedirectStandardError $versionStderr
+            $versionOutput = (Get-Content -LiteralPath $versionStdout, $versionStderr -Raw -ErrorAction SilentlyContinue | Out-String)
+        }
+        finally {
+            Remove-Item -LiteralPath $versionStdout, $versionStderr -Force -ErrorAction SilentlyContinue
+        }
+        if ($versionProcess.ExitCode -ne 0 -or -not $versionOutput.Contains("dfpanel-agent $expectedVersion")) {
+            throw "Agent 程序版本与面板分发版本不一致"
+        }
+    }
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    # 仅停止正在运行当前安装路径的旧 Agent，避免 Windows 锁定 exe 导致替换失败。
+    Get-CimInstance Win32_Process -Filter "Name='dfpanel-agent.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { [string]::Equals($_.ExecutablePath, $ExePath, [StringComparison]::OrdinalIgnoreCase) } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    $oldExe = "$ExePath.old"
+    if (Test-Path -LiteralPath $oldExe) { Remove-Item -LiteralPath $oldExe -Force }
+    if (Test-Path -LiteralPath $ExePath) { Move-Item -LiteralPath $ExePath -Destination $oldExe -Force }
+    try { Move-Item -LiteralPath $tempExe -Destination $ExePath -Force }
+    catch {
+        if (Test-Path -LiteralPath $oldExe) { Move-Item -LiteralPath $oldExe -Destination $ExePath -Force }
+        throw
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $tempExe) { Remove-Item -LiteralPath $tempExe -Force }
+}
 
 Write-Host "==> 写入 Agent 配置"
 $config = [ordered]@{

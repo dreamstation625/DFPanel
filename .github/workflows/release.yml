@@ -219,9 +219,38 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  agent_bundle:
+    name: Agent 全平台包
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: 构建并校验全平台 Agent
+        env:
+          PANEL_VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ARCHIVE="dfpanel-agent-bundle-${PANEL_VERSION}.tar.gz"
+          go run ./cmd/agentbundle -output "dist/${ARCHIVE}"
+          (cd dist && sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-bundle
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 1
+
   release:
     name: 发布 Release
-    needs: [verify, build]
+    needs: [verify, build, agent_bundle]
     runs-on: ubuntu-latest
     steps:
       - name: 下载全部产物
@@ -230,6 +259,12 @@ jobs:
           path: assets
           pattern: dfpanel-*
           merge-multiple: true
+
+      - name: 下载 Agent 全平台包
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-bundle
+          path: assets
 
       - name: 汇总校验值
         run: |

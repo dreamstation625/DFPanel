@@ -11,6 +11,7 @@
 #   ./build.sh --listen :9000 --run  指定监听端口并启动
 #   ./build.sh --agent              编译 Agent 程序（cmd/agent）
 #   ./build.sh --agent --all-platforms   一次编译 Agent 的多平台产物到 output/
+#   ./build.sh --agent-bundle   构建二进制面板分发用的 Agent 全平台包
 #   ./build.sh --all-platforms       一次编译面板的多平台产物到 output/（linux/amd64+arm64、windows/amd64、darwin/arm64）
 #   ./build.sh --docker             构建面板镜像 dreamstation625/dfpanel:latest
 #   ./build.sh --docker --agent     构建 Agent 镜像 dreamstation625/dfpanel-agent:latest
@@ -30,6 +31,7 @@ FRONTEND_ONLY=0
 BACKEND_ONLY=0
 RUN=0
 AGENT=0
+AGENT_BUNDLE=0
 DOCKER=0
 ALL_PLATFORMS=0
 PLATFORM_SET=0
@@ -54,6 +56,7 @@ while [[ $# -gt 0 ]]; do
         --data)          DATA_DIR="$2"; shift 2 ;;
         --token-expire)  TOKEN_EXPIRE="$2"; shift 2 ;;
         --agent)         AGENT=1; shift ;;
+        --agent-bundle)  AGENT_BUNDLE=1; shift ;;
         --docker)        DOCKER=1; shift ;;
         --all-platforms) ALL_PLATFORMS=1; shift ;;
         --image)         IMAGE="$2"; shift 2 ;;
@@ -131,7 +134,9 @@ build_backend() {
     # 所以传相对路径 —— CWD 已经切到 $ROOT 了
     local out_rel="$OUT_FILE"
     [[ "$OUT_FILE" == "$ROOT"/* ]] && out_rel="${OUT_FILE#"$ROOT"/}"
-    (cd "$ROOT" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+    local goarm=""
+    [[ "$arch" != "arm" ]] || goarm=6
+    (cd "$ROOT" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" GOARM="$goarm" \
         go build -trimpath -ldflags "$ldflags" -o "$out_rel" "$pkg")
     ok "$label 已生成: $OUT_FILE (版本 $ver)"
     OUTPUTS+=("$OUT_FILE")
@@ -153,6 +158,14 @@ build_docker() {
     docker build -f "$dockerfile" -t "$tag" "$ROOT"
     ok "镜像已构建: $tag"
 }
+
+if [[ "$AGENT_BUNDLE" -eq 1 ]]; then
+    has go || { echo "未检测到 go"; exit 1; }
+    local_version="$(tr -d ' \n\r' < "$ROOT/VERSION")"
+    mkdir -p "$ROOT/output"
+    (cd "$ROOT" && go run ./cmd/agentbundle -output "output/dfpanel-agent-bundle-${local_version}.tar.gz")
+    exit 0
+fi
 
 if [[ "$BACKEND_ONLY" -eq 0 ]]; then
     if [[ "$SKIP_FRONTEND" -eq 1 ]]; then
@@ -180,7 +193,10 @@ HOST_OS="$(go env GOHOSTOS 2>/dev/null || echo linux)"
 if [[ "$ALL_PLATFORMS" -eq 1 ]]; then
     OUT_FILE=""; TARGET_OS=linux;   TARGET_ARCH=amd64; build_backend
     OUT_FILE=""; TARGET_OS=linux;   TARGET_ARCH=arm64; build_backend
+    OUT_FILE=""; TARGET_OS=linux;   TARGET_ARCH=arm;   build_backend
     OUT_FILE=""; TARGET_OS=windows; TARGET_ARCH=amd64; build_backend
+    OUT_FILE=""; TARGET_OS=windows; TARGET_ARCH=386;   build_backend
+    OUT_FILE=""; TARGET_OS=darwin;  TARGET_ARCH=amd64; build_backend
     OUT_FILE=""; TARGET_OS=darwin;  TARGET_ARCH=arm64; build_backend
 elif [[ "$PLATFORM_SET" -eq 1 || -n "${GOOS:-}" ]]; then
     # 显式指定平台时只编那一个

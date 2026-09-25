@@ -198,8 +198,10 @@ powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:7226/install.ps1
 | 端点 | 说明 |
 |---|---|
 | `GET /install.sh`、`GET /install.ps1` | 安装脚本（内嵌分发） |
-| `GET /downloads/agent/:os/:arch` | Agent 二进制（构建脚本产出后放到 `data/bin/`） |
+| `GET /downloads/agent/:os/:arch` | Agent 二进制：Docker 面板使用镜像内置文件；二进制面板使用部署时校验的全平台包，旧 `bin/` 文件作为兼容回退 |
 | `GET /downloads/:kind/:version/:os/:arch` | frps / frpc 二进制，本地缺失时自动从官方 release 下载并缓存 |
+
+面板的 Pre-release 也提供 `dfpanel-agent-bundle-<面板版本>.tar.gz`，包含七个平台的 Agent、独立的 Agent 版本及 SHA256 清单。二进制面板部署脚本会先校验 Release 包与清单，再切换当前可分发版本；安装请求本身不会访问 GitHub。Agent 安装脚本下载到临时文件并核对 SHA256 和程序版本，检查通过后才替换旧 Agent。
 
 ## 6. 构建
 

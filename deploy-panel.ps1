@@ -13,6 +13,7 @@ param(
     [string]$PublicUrl,
     [string]$Listen = ":7226",
     [string]$BinaryPath,
+    [string]$AgentBundle,
     [string]$Version
 )
 
@@ -123,6 +124,41 @@ function Get-ReleaseBinary {
     return $extracted
 }
 
+function Get-ReleaseAgentBundle {
+    param([string]$ReleaseVersion, [string]$WorkDir)
+    if (-not $ReleaseVersion) { return $null }
+    $archiveName = "dfpanel-agent-bundle-$ReleaseVersion.tar.gz"
+    $archive = Join-Path $WorkDir $archiveName
+    $checksums = Join-Path $WorkDir "checksums.txt"
+    $base = "https://github.com/$repository/releases/download/v$ReleaseVersion"
+    if (Get-Command gh -ErrorAction SilentlyContinue) {
+        try {
+            if (Test-Path -LiteralPath $checksums) {
+                & gh release download "v$ReleaseVersion" -R $repository -p $archiveName -D $WorkDir 2>$null | Out-Null
+            }
+            else {
+                & gh release download "v$ReleaseVersion" -R $repository -p $archiveName -p checksums.txt -D $WorkDir 2>$null | Out-Null
+            }
+        }
+        catch {}
+    }
+    if (-not (Test-Path -LiteralPath $archive)) {
+        try { Invoke-WebRequest -Uri "$base/$archiveName" -OutFile $archive -UseBasicParsing | Out-Null }
+        catch { return $null }
+    }
+    if (-not (Test-Path -LiteralPath $checksums)) {
+        try { Invoke-WebRequest -Uri "$base/checksums.txt" -OutFile $checksums -UseBasicParsing | Out-Null }
+        catch { throw "Agent 包已下载，但无法获取 checksums.txt" }
+    }
+    $line = Get-Content -LiteralPath $checksums | Where-Object { $_ -match ('^[0-9a-fA-F]{64}\s+\*?' + [regex]::Escape($archiveName) + '$') } | Select-Object -First 1
+    if (-not $line) { throw "校验文件中没有 $archiveName 的 SHA256" }
+    $expected = ($line -split '\s+')[0].ToLowerInvariant()
+    $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) { throw "Agent 全平台包 SHA256 校验失败" }
+    Write-Host "==> 已下载并校验 Agent 全平台包：$archiveName"
+    return $archive
+}
+
 function Test-ServiceBinary {
     param([string]$Path)
     try {
@@ -161,7 +197,39 @@ try {
         throw "二进制不支持 Windows 服务：$source；请构建当前源码或使用新版 Release"
     }
 
+    $bundleSource = $null
+    if ($AgentBundle) {
+        $bundleSource = (Resolve-Path -LiteralPath $AgentBundle -ErrorAction Stop).ProviderPath
+    }
+    else {
+        $bundleSource = Get-ReleaseAgentBundle -ReleaseVersion $Version -WorkDir $tempDir
+        if (-not $bundleSource) {
+            $localBundle = Join-Path $repoRoot "output\dfpanel-agent-bundle-$Version.tar.gz"
+            if (Test-Path -LiteralPath $localBundle) {
+                $bundleSource = $localBundle
+            }
+            else {
+                if (-not (Get-Command go -ErrorAction SilentlyContinue) -or -not (Test-Path -LiteralPath (Join-Path $repoRoot "go.mod"))) {
+                    throw "没有 Agent 全平台包；请发布 v$Version 的 Pre-release，或用 -AgentBundle 指定本地包"
+                }
+                $bundleSource = Join-Path $tempDir "dfpanel-agent-bundle-$Version.tar.gz"
+                Write-Host "==> Release 不可用，从当前源码构建 Agent 全平台包"
+                Push-Location $repoRoot
+                try {
+                    & go run ./cmd/agentbundle -output $bundleSource
+                    if ($LASTEXITCODE -ne 0) { throw "构建 Agent 全平台包失败" }
+                }
+                finally { Pop-Location }
+            }
+        }
+    }
+    if (-not (Test-Path -LiteralPath $bundleSource -PathType Leaf) -or (Get-Item -LiteralPath $bundleSource).Length -eq 0) {
+        throw "Agent 全平台包不存在或为空：$bundleSource"
+    }
+
     New-Item -ItemType Directory -Force -Path $installDir, $dataDir | Out-Null
+    $agentVersion = (& $source -prepare-agent-bundle $bundleSource $dataDir | Select-Object -Last 1).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $agentVersion) { throw "Agent 全平台包校验失败，请确认它与面板版本一致" }
     $service = Get-Service -Name "DFPanel" -ErrorAction SilentlyContinue
     $oldCommand = $null
     $backup = Join-Path $tempDir "old-dfpanel.exe"
@@ -206,8 +274,10 @@ try {
             catch { Start-Sleep -Seconds 1 }
         }
         if (-not $healthy) { throw "Windows 服务未通过面板健康检查，请查看 $(Join-Path $dataDir 'panel.log')" }
+        & $exePath -activate-agent-bundle $dataDir $Version
+        if ($LASTEXITCODE -ne 0) { throw "激活 Agent 全平台包失败" }
         Write-Host "==> Windows 服务 DFPanel 已启动；面板地址：$PublicUrl"
-        Write-Host "==> 数据目录：$dataDir；服务日志：$(Join-Path $dataDir 'panel.log')"
+        Write-Host "==> 数据目录：$dataDir；Agent 版本：$agentVersion；服务日志：$(Join-Path $dataDir 'panel.log')"
     }
     catch {
         $reason = $_

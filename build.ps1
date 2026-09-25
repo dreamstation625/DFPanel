@@ -71,6 +71,8 @@ param(
     [int]$TokenExpire = 24,
     # 编译 Agent 程序（cmd/agent）而不是面板
     [switch]$Agent,
+    # 构建二进制面板分发用的 Agent 全平台包
+    [switch]$AgentBundle,
     # 构建 Docker 镜像而不是本地二进制
     [switch]$Docker,
     # Docker 镜像标签
@@ -200,6 +202,7 @@ function Invoke-BackendBuild {
     $env:GOOS = $OS
     $env:GOARCH = $Arch
     $env:CGO_ENABLED = "0"
+    if ($Arch -eq "arm") { $env:GOARM = "6" }
 
     Push-Location $root
     try {
@@ -210,7 +213,7 @@ function Invoke-BackendBuild {
     finally {
         # 清掉交叉编译用的进程级变量。
         # 不用 Remove-Item Env:xxx：某些受管环境会把对 Env: 驱动器的删除当成文件删除来拦截。
-        foreach ($envName in @("GOOS", "GOARCH", "CGO_ENABLED")) {
+        foreach ($envName in @("GOOS", "GOARCH", "GOARM", "CGO_ENABLED")) {
             [Environment]::SetEnvironmentVariable($envName, $null, "Process")
         }
         Pop-Location
@@ -242,6 +245,15 @@ function Invoke-DockerBuild {
 
 Push-Location $root
 try {
+    if ($AgentBundle) {
+        $panelVersion = (Get-Content -LiteralPath (Join-Path $root "VERSION") -Raw -Encoding UTF8).Trim()
+        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+        $bundlePath = Join-Path $outDir "dfpanel-agent-bundle-$panelVersion.tar.gz"
+        & go run ./cmd/agentbundle -output $bundlePath
+        if ($LASTEXITCODE -ne 0) { throw "构建 Agent 全平台包失败" }
+        Write-Ok "Agent 全平台包已生成：$bundlePath"
+        exit 0
+    }
     if (-not $BackendOnly) {
         if ($SkipFrontend) {
             Write-Step "跳过前端构建"
@@ -274,7 +286,10 @@ try {
     if ($AllPlatforms) {
         Invoke-BackendBuild -OS "linux" -Arch "amd64"
         Invoke-BackendBuild -OS "linux" -Arch "arm64"
+        Invoke-BackendBuild -OS "linux" -Arch "arm"
         Invoke-BackendBuild -OS "windows" -Arch "amd64"
+        Invoke-BackendBuild -OS "windows" -Arch "386"
+        Invoke-BackendBuild -OS "darwin" -Arch "amd64"
         Invoke-BackendBuild -OS "darwin" -Arch "arm64"
     }
     elseif ($PSBoundParameters.ContainsKey("TargetOS") -or $PSBoundParameters.ContainsKey("TargetArch")) {

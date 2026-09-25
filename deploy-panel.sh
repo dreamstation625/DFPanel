@@ -14,6 +14,9 @@ MODE=""
 PUBLIC_URL=""
 LISTEN=":7226"
 BINARY_PATH=""
+AGENT_BUNDLE=""
+AGENT_BUNDLE_PATH=""
+AGENT_VERSION=""
 IMAGE=""
 VERSION=""
 WORK_DIR=""
@@ -24,6 +27,7 @@ usage() {
 
 选项：
   --binary PATH    使用本地面板二进制；不指定时先下载对应版本的 GitHub Release
+  --agent-bundle PATH  使用本地 Agent 全平台包；不指定时从同一 Release 下载
   --version VER    Release / 默认镜像版本；默认读取同目录 VERSION
   --image IMAGE    Docker 镜像；默认 dreamstation625/dfpanel:<VERSION>
   --listen :PORT   面板监听端口，默认 :7226
@@ -55,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --public-url) [[ $# -ge 2 ]] || fail "--public-url 缺少值"; PUBLIC_URL="$2"; shift 2 ;;
     --listen)     [[ $# -ge 2 ]] || fail "--listen 缺少值"; LISTEN="$2"; shift 2 ;;
     --binary)     [[ $# -ge 2 ]] || fail "--binary 缺少值"; BINARY_PATH="$2"; shift 2 ;;
+    --agent-bundle) [[ $# -ge 2 ]] || fail "--agent-bundle 缺少值"; AGENT_BUNDLE="$2"; shift 2 ;;
     --image)      [[ $# -ge 2 ]] || fail "--image 缺少值"; IMAGE="$2"; shift 2 ;;
     --version)    [[ $# -ge 2 ]] || fail "--version 缺少值"; VERSION="$2"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
@@ -111,7 +116,11 @@ download_release() {
 
   # gh 支持已登录的私有仓库；未安装或未登录时尝试公开 Release 地址。
   if command -v gh >/dev/null 2>&1; then
-    gh release download "v$VERSION" -R "$REPOSITORY" -p "$archive" -p checksums.txt -D "$WORK_DIR" >/dev/null 2>&1 || true
+    if [[ -s "$checksums" ]]; then
+      gh release download "v$VERSION" -R "$REPOSITORY" -p "$archive" -D "$WORK_DIR" >/dev/null 2>&1 || true
+    else
+      gh release download "v$VERSION" -R "$REPOSITORY" -p "$archive" -p checksums.txt -D "$WORK_DIR" >/dev/null 2>&1 || true
+    fi
   fi
   if [[ ! -s "$archive_path" ]] &&
     ! curl -fsSL --retry 2 --connect-timeout 10 --max-time 180 "$base/$archive" -o "$archive_path"; then
@@ -133,8 +142,39 @@ download_release() {
   info "已下载并校验 Release：$archive"
 }
 
+download_agent_bundle() {
+  local archive="dfpanel-agent-bundle-${VERSION}.tar.gz"
+  local base="https://github.com/$REPOSITORY/releases/download/v$VERSION"
+  local archive_path="$WORK_DIR/$archive"
+  local checksums="$WORK_DIR/checksums.txt"
+  [[ -n "$VERSION" ]] || return 1
+  if command -v gh >/dev/null 2>&1; then
+    if [[ -s "$checksums" ]]; then
+      gh release download "v$VERSION" -R "$REPOSITORY" -p "$archive" -D "$WORK_DIR" >/dev/null 2>&1 || true
+    else
+      gh release download "v$VERSION" -R "$REPOSITORY" -p "$archive" -p checksums.txt -D "$WORK_DIR" >/dev/null 2>&1 || true
+    fi
+  fi
+  if [[ ! -s "$archive_path" ]] &&
+    ! curl -fsSL --retry 2 --connect-timeout 10 --max-time 300 "$base/$archive" -o "$archive_path"; then
+    return 1
+  fi
+  if [[ ! -s "$checksums" ]] &&
+    ! curl -fsSL --retry 2 --connect-timeout 10 --max-time 60 "$base/checksums.txt" -o "$checksums"; then
+    fail "Agent 包已下载，但无法获取 checksums.txt"
+  fi
+  local expected actual
+  expected="$(awk -v name="$archive" '$2 == name { print $1; exit }' "$checksums")"
+  [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || fail "校验文件中没有 $archive 的 SHA256"
+  actual="$(sha256sum "$archive_path" | awk '{ print $1 }')"
+  [[ "${actual,,}" == "${expected,,}" ]] || fail "Agent 包 SHA256 校验失败"
+  AGENT_BUNDLE_PATH="$archive_path"
+  info "已下载并校验 Agent 全平台包：$archive"
+}
+
 if [[ "$MODE" == "docker" ]]; then
   [[ -z "$BINARY_PATH" ]] || fail "--binary 仅适用于二进制模式"
+  [[ -z "$AGENT_BUNDLE" ]] || fail "--agent-bundle 仅适用于二进制模式"
   command -v docker >/dev/null 2>&1 || fail "未安装 Docker"
   docker compose version >/dev/null 2>&1 || fail "未安装 Docker Compose 插件"
   if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet dfpanel; then
@@ -194,8 +234,25 @@ fi
 [[ -s "$BINARY_PATH" ]] || fail "二进制文件为空：$BINARY_PATH"
 "$BINARY_PATH" -version >/dev/null || fail "二进制无法在当前机器运行：$BINARY_PATH"
 
+if [[ -n "$AGENT_BUNDLE" ]]; then
+  [[ -s "$AGENT_BUNDLE" ]] || fail "本地 Agent 包不存在或为空：$AGENT_BUNDLE"
+  AGENT_BUNDLE_PATH="$AGENT_BUNDLE"
+elif ! download_agent_bundle; then
+  AGENT_BUNDLE_PATH="$ROOT/output/dfpanel-agent-bundle-${VERSION}.tar.gz"
+  if [[ ! -s "$AGENT_BUNDLE_PATH" ]]; then
+    command -v go >/dev/null 2>&1 && [[ -f "$ROOT/go.mod" ]] ||
+      fail "没有 Agent 全平台包；请发布 v$VERSION 的 Pre-release，或用 --agent-bundle 指定本地包"
+    AGENT_BUNDLE_PATH="$WORK_DIR/dfpanel-agent-bundle-${VERSION}.tar.gz"
+    info "Release 不可用，从当前源码构建 Agent 全平台包"
+    (cd "$ROOT" && go run ./cmd/agentbundle -output "$AGENT_BUNDLE_PATH")
+  fi
+fi
+
 mkdir -p "$DATA_DIR"
 chmod 700 "$DATA_DIR"
+AGENT_VERSION="$("$BINARY_PATH" -prepare-agent-bundle "$AGENT_BUNDLE_PATH" "$DATA_DIR")" ||
+  fail "Agent 全平台包校验失败，请确认它与面板版本一致"
+[[ -n "$AGENT_VERSION" ]] || fail "Agent 全平台包未返回版本号"
 if [[ -f "$BIN_PATH" ]]; then cp -p "$BIN_PATH" "$WORK_DIR/old-binary"; fi
 if [[ -f "$UNIT_PATH" ]]; then cp -p "$UNIT_PATH" "$WORK_DIR/old-unit"; fi
 install -m 0755 "$BINARY_PATH" "$BIN_PATH.new"
@@ -219,7 +276,8 @@ EOF
 mv -f "$UNIT_PATH.tmp" "$UNIT_PATH"
 systemctl daemon-reload
 systemctl enable dfpanel >/dev/null
-if ! systemctl restart dfpanel || ! systemctl is-active --quiet dfpanel || ! wait_for_panel; then
+if ! systemctl restart dfpanel || ! systemctl is-active --quiet dfpanel || ! wait_for_panel ||
+   ! "$BIN_PATH" -activate-agent-bundle "$DATA_DIR" "$VERSION"; then
   info "启动失败，恢复部署前的二进制与服务文件"
   if [[ -f "$WORK_DIR/old-binary" ]]; then
     cp -p "$WORK_DIR/old-binary" "$BIN_PATH"
@@ -238,4 +296,4 @@ if ! systemctl restart dfpanel || ! systemctl is-active --quiet dfpanel || ! wai
   fail "面板服务未能启动，请查看 journalctl -u dfpanel -n 50"
 fi
 systemctl --no-pager --full status dfpanel | head -n 12 || true
-info "面板地址：$PUBLIC_URL；数据目录：$DATA_DIR"
+info "面板地址：$PUBLIC_URL；数据目录：$DATA_DIR；Agent 版本：$AGENT_VERSION"

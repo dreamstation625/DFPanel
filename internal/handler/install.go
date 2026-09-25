@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"dfpanel/internal/agentbundle"
 	"dfpanel/internal/config"
 	"dfpanel/internal/database"
 	"dfpanel/internal/distrib"
@@ -18,12 +19,15 @@ import (
 
 // InstallHandler 安装脚本分发与一键安装命令生成（支持二进制与 Docker 两种形态）
 type InstallHandler struct {
-	cfg *config.Config
+	cfg             *config.Config
+	bundledAgentDir string
 }
+
+const defaultBundledAgentDir = "/usr/local/share/dfpanel/agent"
 
 // NewInstallHandler 创建安装处理器
 func NewInstallHandler(cfg *config.Config) *InstallHandler {
-	return &InstallHandler{cfg: cfg}
+	return &InstallHandler{cfg: cfg, bundledAgentDir: defaultBundledAgentDir}
 }
 
 // installCommands 生成结果：同时给出二进制与 Docker 两种形态，前端按需要展示
@@ -83,23 +87,57 @@ func (h *InstallHandler) ScriptPs1(c *gin.Context) {
 }
 
 // DownloadAgent GET /downloads/agent/:os/:arch 分发 Agent 二进制
-// 二进制由构建脚本产出到 <dataDir>/bin/agent-<os>-<arch>[.exe]
+// 优先读取数据目录中的自定义二进制；Docker 镜像内置的 Agent 用作回退。
 func (h *InstallHandler) DownloadAgent(c *gin.Context) {
 	osName := strings.ToLower(c.Param("os"))
 	arch := strings.ToLower(c.Param("arch"))
+	if !agentbundle.ValidPlatform(osName, arch) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "不支持的 Agent 平台"})
+		return
+	}
 	name := fmt.Sprintf("agent-%s-%s", osName, arch)
 	if osName == "windows" {
 		name += ".exe"
 	}
-	path := filepath.Join(h.cfg.DataDir, "bin", name)
-	if _, err := os.Stat(path); err != nil {
+	path := filepath.Join(h.bundledAgentDir, name)
+	version := ""
+	expectedChecksum := ""
+	if regularFile(path) {
+		if data, err := os.ReadFile(filepath.Join(h.bundledAgentDir, "VERSION.agent")); err == nil {
+			version = strings.TrimSpace(string(data))
+		}
+	} else if current, currentVersion, currentChecksum, err := agentbundle.CurrentFile(h.cfg.DataDir, name); err == nil {
+		path, version, expectedChecksum = current, currentVersion, currentChecksum
+	} else {
+		// 兼容升级前手动放到 bin/ 的 Agent 文件。
+		path = filepath.Join(h.cfg.DataDir, "bin", name)
+	}
+	if !regularFile(path) {
 		c.JSON(http.StatusNotFound, gin.H{
-			"error": fmt.Sprintf("未找到 Agent 二进制 %s，请先在面板服务器执行构建脚本生成并放置到 %s", name, path),
+			"error": fmt.Sprintf("未找到 Agent 二进制 %s：请在面板数据目录的 bin/%s 准备该文件；Docker 面板可更新到内置 Agent 的镜像", name, name),
 		})
 		return
 	}
+	checksum, err := agentbundle.Checksum(path)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Agent 文件校验失败"})
+		return
+	}
+	if expectedChecksum != "" && !strings.EqualFold(checksum, expectedChecksum) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Agent 文件与发布清单的 SHA256 不一致"})
+		return
+	}
+	c.Header("X-Agent-SHA256", checksum)
+	if version != "" {
+		c.Header("X-Agent-Version", version)
+	}
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", name))
 	c.File(path)
+}
+
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // DownloadFRP GET /downloads/:kind/:version/:os/:arch 分发 frps / frpc 二进制

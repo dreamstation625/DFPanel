@@ -75,7 +75,7 @@ Windows 使用 [deploy-panel.ps1](deploy-panel.ps1)。二进制部署会注册�
 .\deploy-panel.ps1 -Mode Docker
 ```
 
-二进制模式默认尝试下载同目录 `VERSION` 对应的 GitHub Release 并校验 SHA256；Release 不存在时回退到本地 `output/` 构建产物。可通过 `--version` / `-Version` 指定其他版本。Linux 的数据目录为 `/var/lib/dfpanel`，Windows 为 `%ProgramData%\DFPanel\data`；重复部署不会删除数据。Windows 服务日志写入数据目录的 `panel.log`。
+二进制模式默认下载同目录 `VERSION` 对应的 GitHub Release（包括 Pre-release）中的面板程序及 Agent 全平台包，并校验 SHA256。Release 不存在时，可使用本地 `output/`，有 Go 源码时部署脚本也能构建 Agent 全平台包；亦可通过 `--agent-bundle` / `-AgentBundle` 指定本地包。可通过 `--version` / `-Version` 指定面板版本。Linux 的数据目录为 `/var/lib/dfpanel`，Windows 为 `%ProgramData%\DFPanel\data`；重复部署不会删除数据。Windows 服务日志写入数据目录的 `panel.log`。
 
 Windows 脚本会检查二进制是否支持 Windows 服务。若当前 Release 是旧版本，请先用 `build.ps1` 构建当前源码，再用 `-BinaryPath` 指定生成的程序。
 
@@ -123,14 +123,18 @@ Compose 示例默认使用 Linux host 网络。使用端口映射时，请按实
 
 首次访问面板完成初始化。安装远端 Agent 时，使用「Agent 管理 → 安装命令」生成的命令：Linux / macOS 脚本注册系统服务，Windows 脚本注册开机启动的计划任务。安装命令包含 Agent 密钥，请在目标机器上执行并妥善保管。
 
-面板的 Agent 下载接口从数据目录的 `bin/agent-<系统>-<架构>`（Windows 加 `.exe`）读取文件。构建脚本产物名带 `dfpanel-` 前缀，需要放置成接口要求的文件名。例如面板数据目录为 `./data` 时，可准备 Linux amd64 Agent：
+使用本次更新构建的 Docker 面板镜像已内置 Linux、Windows 和 macOS 安装脚本支持的 Agent 二进制，直接执行「Agent 管理 → 安装命令」即可。Agent 版本取自镜像构建时的 `VERSION.agent`；升级时拉取新面板镜像并重新创建容器。
+
+通过 `deploy-panel.sh` 或 `deploy-panel.ps1` 安装的二进制面板会自动准备七种平台的 Agent：Linux amd64、arm64、arm，Windows amd64、386，以及 macOS amd64、arm64。需要本地包时，可运行：
 
 ```bash
-mkdir -p ./data/bin
-cp ./output/dfpanel-agent-linux-amd64 ./data/bin/agent-linux-amd64
+./build.sh --agent-bundle
 ```
 
-若安装脚本返回 404，请先确认面板数据目录和对应平台的 Agent 文件；详细说明见 [Agent 部署文档](docs/agent-架构与部署.md)。
+Windows 使用 `.\build.ps1 -AgentBundle`。直接运行面板二进制而不使用部署脚本时，先用 `dfpanel -prepare-agent-bundle <包路径> <数据目录>` 校验并准备，再用 `dfpanel -activate-agent-bundle <数据目录> <面板版本>` 激活。旧版手动放在数据目录 `bin/` 的文件仍可读取；Docker 镜像内置的 Agent 优先，避免旧文件遮盖新镜像。
+本地二进制部署可将生成的包传给 `deploy-panel.sh --agent-bundle <包路径>` 或 `deploy-panel.ps1 -AgentBundle <包路径>`。包名使用面板发布版本，包内清单独立记录 `VERSION.agent`；面板 `beta.19` 可分发 Agent `beta.18`。
+
+若安装脚本返回 404，请先确认面板已更新并已准备 Agent 全平台包；详细说明见 [Agent 部署文档](docs/agent-架构与部署.md)。
 
 ### 常用配置
 
