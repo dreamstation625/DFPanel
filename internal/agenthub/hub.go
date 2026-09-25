@@ -61,16 +61,22 @@ func (h *Hub) Attach(agentID uint, ws *websocket.Conn) *Conn {
 		done:    make(chan struct{}),
 	}
 
-	h.mu.Lock()
-	if old, ok := h.conns[agentID]; ok {
-		old.close()
-	}
-	h.conns[agentID] = c
-	h.mu.Unlock()
+	h.replace(c)
 
 	go c.writeLoop()
 	go c.readLoop()
 	return c
+}
+
+// replace 先切换当前连接，再在锁外关闭旧连接。旧连接关闭会再次访问 Hub，不能持锁调用。
+func (h *Hub) replace(c *Conn) {
+	h.mu.Lock()
+	old := h.conns[c.agentID]
+	h.conns[c.agentID] = c
+	h.mu.Unlock()
+	if old != nil {
+		old.close()
+	}
 }
 
 // Wait 阻塞直到连接关闭（HTTP handler 中调用以保持连接存活）
@@ -202,17 +208,21 @@ func (h *Hub) State(agentID uint, targetType string, targetID uint) (proto.Targe
 	return st, ok
 }
 
-// MarkOffline 标记 Agent 离线并清理缓存
-func (h *Hub) MarkOffline(agentID uint) {
+// detach 只允许当前连接标记离线；被新连接替换的旧连接不能删除新连接。
+func (h *Hub) detach(c *Conn) {
 	h.mu.Lock()
-	delete(h.conns, agentID)
-	delete(h.states, agentID)
+	if h.conns[c.agentID] != c {
+		h.mu.Unlock()
+		return
+	}
+	delete(h.conns, c.agentID)
+	delete(h.states, c.agentID)
 	h.mu.Unlock()
 
 	now := time.Now()
-	if err := database.DB.Model(&model.Agent{}).Where("id = ?", agentID).
+	if err := database.DB.Model(&model.Agent{}).Where("id = ?", c.agentID).
 		Updates(map[string]any{"status": "offline", "last_seen": now}).Error; err != nil {
-		log.Printf("标记 Agent(%d) 离线失败: %v", agentID, err)
+		log.Printf("标记 Agent(%d) 离线失败: %v", c.agentID, err)
 	}
 }
 
@@ -281,8 +291,10 @@ func (h *Hub) deliver(env proto.Envelope) {
 
 func (c *Conn) close() {
 	c.once.Do(func() {
-		c.hub.MarkOffline(c.agentID)
-		_ = c.ws.Close()
+		c.hub.detach(c)
+		if c.ws != nil {
+			_ = c.ws.Close()
+		}
 		close(c.done)
 	})
 }

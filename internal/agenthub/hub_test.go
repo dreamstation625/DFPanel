@@ -3,6 +3,7 @@ package agenthub
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -11,6 +12,35 @@ import (
 	"dfpanel/internal/model"
 	"dfpanel/internal/proto"
 )
+
+func TestReplacingConnectionDoesNotBlockOrDisconnectNewConnection(t *testing.T) {
+	h := New()
+	old := &Conn{hub: h, agentID: 1, done: make(chan struct{})}
+	h.conns[1] = old
+	current := &Conn{hub: h, agentID: 1, done: make(chan struct{})}
+	replaced := make(chan struct{})
+	go func() {
+		h.replace(current)
+		close(replaced)
+	}()
+	select {
+	case <-replaced:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Agent 重连时替换连接被 Hub 锁阻塞")
+	}
+	if !h.Online(1) || h.conns[1] != current {
+		t.Fatal("旧连接关闭后，新连接应保持在线")
+	}
+	select {
+	case <-old.done:
+	default:
+		t.Fatal("旧连接未关闭")
+	}
+	old.close()
+	if !h.Online(1) {
+		t.Fatal("旧连接重复关闭不应清理新连接")
+	}
+}
 
 // WebSocket 和 HTTP 心跳都会调用 UpdateState；版本必须由此落库供两个列表展示。
 func TestUpdateStatePersistsFrpVersion(t *testing.T) {
