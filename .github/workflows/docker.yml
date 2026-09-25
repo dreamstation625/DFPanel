@@ -9,7 +9,7 @@ name: Docker
 # Agent 镜像按 Agent 版本打标签：远端已有同版本镜像就跳过构建，只改面板时不必重建 Agent。
 #
 # 版本号格式：0.0.1（正式）或 0.0.1-beta / 0.0.1-beta.2 / 0.0.1-beta.02 / 0.0.1-rc.1（预发布）。
-# 预发布版本只打版本号与 sha 标签，不覆盖 latest。
+# 预发布版本只打版本号标签，不覆盖 latest。
 # 注意：0.0.1-beta.02 这类带前导零的序号不是严格 SemVer，docker/metadata-action 的
 # semver 类型会跳过它；精确版本标签由 type=raw 保证，不受影响。
 #
@@ -159,7 +159,6 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=${{ needs.verify.outputs.version }}
             type=raw,value=latest,enable=${{ needs.verify.outputs.latest }}
-            type=sha,format=short,prefix=sha-
           labels: |
             org.opencontainers.image.title=DFPanel
             org.opencontainers.image.description=frp 可视化控制面板（面板与 frps/frpc 分离部署）
@@ -231,10 +230,9 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=${{ needs.verify.outputs.agent_version }}
             type=raw,value=latest,enable=${{ needs.verify.outputs.latest }}
-            type=sha,format=short,prefix=sha-
           labels: |
             org.opencontainers.image.title=DFPanel Agent
-            org.opencontainers.image.description=DFPanel 托管 Agent（同时承载 frps 与 frpc）
+            org.opencontainers.image.description=DFPanel 单实例托管 Agent（frps 或 frpc）
             org.opencontainers.image.version=${{ needs.verify.outputs.agent_version }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
