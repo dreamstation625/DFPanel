@@ -39,23 +39,25 @@ func TestManagedConfigsOnlyReturnsOwnedAppliedVersions(t *testing.T) {
 		_ = sqlDB.Close()
 	})
 
-	agent := model.Agent{Name: "owner", NodeKey: "owner-key", Secret: "owner-secret", Roles: "frpc,frps"}
-	other := model.Agent{Name: "other", NodeKey: "other-key", Secret: "other-secret", Roles: "frpc,frps"}
-	for _, item := range []*model.Agent{&agent, &other} {
+	agent := model.Agent{Name: "owner", NodeKey: "owner-key", Secret: "owner-secret", Roles: "frpc"}
+	other := model.Agent{Name: "other", NodeKey: "other-key", Secret: "other-secret", Roles: "frpc"}
+	serverAgent := model.Agent{Name: "server", NodeKey: "server-key", Secret: "server-secret", Roles: "frps"}
+	draftAgent := model.Agent{Name: "draft", NodeKey: "draft-key", Secret: "draft-secret", Roles: "frpc"}
+	for _, item := range []*model.Agent{&agent, &other, &serverAgent, &draftAgent} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
 	node := model.Node{Name: "client", AgentID: agent.ID, NodeKey: "node-key", AutoStart: true, ManualStopped: true}
 	otherNode := model.Node{Name: "other-client", AgentID: other.ID, NodeKey: "other-node-key"}
-	neverApplied := model.Node{Name: "new-client", AgentID: agent.ID, NodeKey: "new-node-key"}
+	neverApplied := model.Node{Name: "new-client", AgentID: draftAgent.ID, NodeKey: "new-node-key"}
 	for _, item := range []*model.Node{&node, &otherNode, &neverApplied} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
-	server := model.FrpsServer{Name: "server", AgentID: agent.ID, DeployMode: "agent", AutoStart: true}
-	localServer := model.FrpsServer{Name: "local", AgentID: agent.ID, DeployMode: "local"}
+	server := model.FrpsServer{Name: "server", AgentID: serverAgent.ID, DeployMode: "agent", AutoStart: true}
+	localServer := model.FrpsServer{Name: "local", DeployMode: "local"}
 	for _, item := range []*model.FrpsServer{&server, &localServer} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatal(err)
@@ -93,14 +95,38 @@ func TestManagedConfigsOnlyReturnsOwnedAppliedVersions(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Configs) != 2 {
-		t.Fatalf("应只返回自身已应用的 frpc/frps 配置：%+v", body.Configs)
+	if len(body.Configs) != 1 {
+		t.Fatalf("客户端 Agent 只能读取自己的节点配置：%+v", body.Configs)
 	}
-	gotNode, gotServer := body.Configs[0], body.Configs[1]
+	gotNode := body.Configs[0]
 	if gotNode.TargetType != proto.TargetNode || gotNode.TargetID != node.ID || gotNode.Version != 2 ||
 		gotNode.Content != `{"v":2}` || !gotNode.AutoStart || !gotNode.ManualStopped {
 		t.Fatalf("客户端恢复快照不正确：%+v", gotNode)
 	}
+	duplicate := httptest.NewRecorder()
+	router.ServeHTTP(duplicate, httptest.NewRequest(http.MethodGet,
+		strings.Replace(signedConfigsURL(agent), "0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210", 1), nil))
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("同一凭据安装在第二台客户端应被拒绝：%d %s", duplicate.Code, duplicate.Body.String())
+	}
+	clonedDirectory := httptest.NewRecorder()
+	router.ServeHTTP(clonedDirectory, httptest.NewRequest(http.MethodGet,
+		strings.Replace(signedConfigsURL(agent), "11111111111111111111111111111111", "22222222222222222222222222222222", 1), nil))
+	if clonedDirectory.Code != http.StatusConflict {
+		t.Fatalf("复制安装目录到其它宿主机应被拒绝：%d %s", clonedDirectory.Code, clonedDirectory.Body.String())
+	}
+	reusedDirectory := httptest.NewRecorder()
+	router.ServeHTTP(reusedDirectory, httptest.NewRequest(http.MethodGet, signedConfigsURL(other), nil))
+	if reusedDirectory.Code != http.StatusConflict {
+		t.Fatalf("不同 Agent 不能复用同一个安装实例：%d %s", reusedDirectory.Code, reusedDirectory.Body.String())
+	}
+	serverURL := strings.Replace(signedConfigsURL(serverAgent), "0123456789abcdef0123456789abcdef", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1)
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, serverURL, nil))
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil || len(body.Configs) != 1 {
+		t.Fatalf("服务端 Agent 配置读取失败：%d %s", response.Code, response.Body.String())
+	}
+	gotServer := body.Configs[0]
 	if gotServer.TargetType != proto.TargetServer || gotServer.TargetID != server.ID || gotServer.Version != 4 ||
 		gotServer.Content != `{"bindPort":7000}` || !gotServer.AutoStart || gotServer.ManualStopped {
 		t.Fatalf("服务端恢复快照不正确：%+v", gotServer)
@@ -116,9 +142,12 @@ func TestManagedConfigsOnlyReturnsOwnedAppliedVersions(t *testing.T) {
 func signedConfigsURL(agent model.Agent) string {
 	ts := time.Now().Unix()
 	query := url.Values{
-		"nodeKey": {agent.NodeKey},
-		"ts":      {strconv.FormatInt(ts, 10)},
-		"sign":    {proto.Sign(agent.Secret, agent.NodeKey, ts)},
+		"nodeKey":    {agent.NodeKey},
+		"ts":         {strconv.FormatInt(ts, 10)},
+		"sign":       {proto.Sign(agent.Secret, agent.NodeKey, ts)},
+		"instanceId": {"0123456789abcdef0123456789abcdef"},
+		"hostId":     {"11111111111111111111111111111111"},
+		"role":       {agent.Roles},
 	}
 	return "/api/agent/configs?" + query.Encode()
 }

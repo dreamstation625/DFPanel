@@ -26,7 +26,7 @@ const nodes = ref<NodeInfo[]>([])
 const agents = ref<AgentInfo[]>([])
 const servers = ref<FrpsServer[]>([])
 
-// frp 版本：frpc 的版本跟随其托管 Agent（一个 Agent 上 frps 与 frpc 共用一个版本）
+// frpc 版本由这个节点专属的客户端 Agent 管理。
 const frpVisible = ref(false)
 const frpTarget = ref<AgentInfo | null>(null)
 
@@ -255,8 +255,10 @@ const agentName = (id: number) => agents.value.find((a) => a.id === id)?.name ??
 const agentOnline = (id: number) => !!agents.value.find((a) => a.id === id)?.online
 const serverName = (id: number) => servers.value.find((s) => s.id === id)?.name ?? '未关联'
 
-/** 只有启用了 frpc 角色的 Agent 才能承载客户端节点 */
-const frpcAgents = computed(() => agents.value.filter((a) => (a.roles || '').split(',').includes('frpc')))
+/** 只显示未绑定节点的客户端 Agent；编辑时保留当前绑定项。 */
+const frpcAgents = computed(() => agents.value.filter((a) =>
+  a.roles === 'frpc' && !nodes.value.some((n) => n.agentId === a.id && n.id !== editingId.value),
+))
 
 /** frp 客户端插件类型（不同插件参数差异大，用 JSON 承载参数） */
 const PLUGIN_TYPES = [
@@ -300,11 +302,11 @@ async function load() {
 }
 
 function openCreate() {
+  editingId.value = 0
   if (!frpcAgents.value.length) {
-    ElMessage.warning('还没有启用 frpc 角色的 Agent，请先到「Agent 管理」创建')
+    ElMessage.warning('没有空闲的客户端 Agent，请先到「Agent 管理」创建')
     return
   }
-  editingId.value = 0
   Object.assign(form, emptyNodeForm(), {
     agentId: frpcAgents.value[0]?.id ?? 0,
     serverId: servers.value[0]?.id ?? 0,
@@ -608,8 +610,9 @@ async function rollbackVersion(version: number) {
 
 async function removeNode(n: NodeInfo) {
   await ElMessageBox.confirm(`确认删除节点「${n.name}」及其隧道配置？`, '提示', { type: 'warning' })
-  await nodeApi.remove(n.id)
-  ElMessage.success('已删除')
+  const result = await nodeApi.remove(n.id)
+  if (result.cleanupQueued) ElMessage.warning('节点已删除；Agent 离线，旧配置将在其上线后清理')
+  else ElMessage.success('已删除，Agent 上的旧配置也已清理')
   await load()
 }
 
@@ -726,7 +729,7 @@ onMounted(load)
             v-model="form.agentId"
             placeholder="选择承载 frpc 的 Agent"
             style="width: 100%"
-            :disabled="!frpcAgents.length"
+            :disabled="!frpcAgents.length || !!editingId"
           >
             <el-option
               v-for="a in frpcAgents"
@@ -735,8 +738,8 @@ onMounted(load)
               :label="`${a.name}（${a.online ? '在线' : '离线'}）`"
             />
           </el-select>
-          <span v-if="frpcAgents.length" class="hint">frpc 永远由 Agent 承载；这里只列出启用了 frpc 角色的 Agent</span>
-          <span v-else class="hint" style="color: #e6a23c">还没有启用 frpc 角色的 Agent，请先到「Agent 管理」创建</span>
+          <span v-if="frpcAgents.length" class="hint">每个客户端 Agent 只绑定一个节点；已创建节点的绑定不能更换</span>
+          <span v-else class="hint" style="color: #e6a23c">没有空闲的客户端 Agent，请先到「Agent 管理」创建</span>
         </el-form-item>
         <el-form-item label="关联 frps">
           <el-select v-model="form.serverId" clearable placeholder="选择该节点连接的服务端" style="width: 100%">

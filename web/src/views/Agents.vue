@@ -39,7 +39,7 @@ async function checkAgentVersions(refresh = false) {
   }
 }
 
-// frp 版本管理（版本按 Agent 统一：该 Agent 上 frps 与 frpc 共用一个版本）
+// 每个 Agent 独立管理所绑定 frps 或 frpc 的 frp 版本。
 const frpVisible = ref(false)
 const frpTarget = ref<AgentInfo | null>(null)
 /** 新建时没选 frp 版本：先弹版本选择器，关掉之后再把安装命令给出来 */
@@ -85,7 +85,7 @@ function compareSemver(x: string, y: string) {
 }
 
 const createVisible = ref(false)
-const createForm = reactive({ name: '', remark: '', roles: ['frpc'] as string[], frpVersion: '' })
+const createForm = reactive({ name: '', remark: '', roles: 'frpc', frpVersion: '' })
 
 // 新建时可以先挑好 frp 版本：只记为期望版本，二进制要在设置页按平台下载后再来切换
 const frpVersionOptions = ref<string[]>([])
@@ -104,7 +104,7 @@ async function loadFrpVersions() {
 const creating = ref(false)
 
 const editVisible = ref(false)
-const editForm = reactive({ id: 0, name: '', remark: '', roles: [] as string[] })
+const editForm = reactive({ id: 0, name: '', remark: '', roles: 'frpc' })
 const editing = ref(false)
 
 const installVisible = ref(false)
@@ -147,24 +147,20 @@ async function load() {
 function openCreate() {
   createForm.name = ''
   createForm.remark = ''
-  createForm.roles = ['frpc']
+  createForm.roles = 'frpc'
   createForm.frpVersion = ''
   createVisible.value = true
   loadFrpVersions()
 }
 
 async function submitCreate() {
-  if (!createForm.roles.length) {
-    ElMessage.warning('请至少选择一个角色')
-    return
-  }
   creating.value = true
   try {
     const pickedVersion = createForm.frpVersion
     const created = await agentApi.create({
       name: createForm.name || `Agent-${agents.value.length + 1}`,
       remark: createForm.remark,
-      roles: createForm.roles.join(','),
+      roles: createForm.roles,
       frpVersion: pickedVersion || undefined,
     })
     createVisible.value = false
@@ -188,7 +184,7 @@ function openEdit(a: AgentInfo) {
   editForm.id = a.id
   editForm.name = a.name
   editForm.remark = a.remark
-  editForm.roles = (a.roles || 'frpc').split(',').filter(Boolean)
+  editForm.roles = a.roles || 'frpc'
   editVisible.value = true
 }
 
@@ -198,7 +194,7 @@ async function submitEdit() {
     await agentApi.update(editForm.id, {
       name: editForm.name,
       remark: editForm.remark,
-      roles: editForm.roles.join(','),
+      roles: editForm.roles,
     })
     editVisible.value = false
     ElMessage.success('已保存')
@@ -268,7 +264,7 @@ async function resetToken(a: AgentInfo) {
 }
 
 async function remove(a: AgentInfo) {
-  await ElMessageBox.confirm(`确认删除 Agent「${a.name}」？该机器上已托管的 frps / frpc 不会被自动停止。`, '提示', {
+  await ElMessageBox.confirm(`确认删除 Agent「${a.name}」？请先删除其绑定的服务端或节点。`, '提示', {
     type: 'warning',
   })
   await agentApi.remove(a.id)
@@ -309,11 +305,9 @@ onUnmounted(() => {
             <div v-if="row.remark" class="sub">{{ row.remark }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="角色" width="150">
+        <el-table-column label="类型" width="150">
           <template #default="{ row }">
-            <el-tag v-for="r in (row.roles || 'frpc').split(',')" :key="r" size="small" style="margin-right: 4px">
-              {{ r }}
-            </el-tag>
+            <el-tag size="small">{{ row.roles === 'frps' ? '服务端' : '客户端' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
@@ -383,11 +377,11 @@ onUnmounted(() => {
         <el-form-item label="名称">
           <el-input v-model="createForm.name" placeholder="如 广州-01" />
         </el-form-item>
-        <el-form-item label="角色">
-          <el-checkbox-group v-model="createForm.roles">
-            <el-checkbox value="frps">frps（服务端）</el-checkbox>
-            <el-checkbox value="frpc">frpc（客户端）</el-checkbox>
-          </el-checkbox-group>
+        <el-form-item label="类型">
+          <el-radio-group v-model="createForm.roles">
+            <el-radio value="frps">frps（服务端）</el-radio>
+            <el-radio value="frpc">frpc（客户端）</el-radio>
+          </el-radio-group>
         </el-form-item>
         <el-form-item label="frp 版本">
           <el-select
@@ -425,11 +419,11 @@ onUnmounted(() => {
         <el-form-item label="名称">
           <el-input v-model="editForm.name" />
         </el-form-item>
-        <el-form-item label="角色">
-          <el-checkbox-group v-model="editForm.roles">
-            <el-checkbox value="frps">frps（服务端）</el-checkbox>
-            <el-checkbox value="frpc">frpc（客户端）</el-checkbox>
-          </el-checkbox-group>
+        <el-form-item label="类型">
+          <el-radio-group v-model="editForm.roles">
+            <el-radio value="frps">frps（服务端）</el-radio>
+            <el-radio value="frpc">frpc（客户端）</el-radio>
+          </el-radio-group>
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="editForm.remark" />

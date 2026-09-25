@@ -11,7 +11,7 @@ import (
 	"dfpanel/internal/proto"
 )
 
-func TestSyncMissingConfigsRestoresBothRolesWithoutReplacingLocalFile(t *testing.T) {
+func TestSyncMissingConfigsRestoresOwnRoleWithoutReplacingLocalFile(t *testing.T) {
 	configs := []proto.ManagedConfig{
 		{TargetType: proto.TargetNode, TargetID: 1, Version: 3, Content: `{"serverAddr":"panel.example"}`, AutoStart: true, ManualStopped: true},
 		{TargetType: proto.TargetServer, TargetID: 2, Version: 4, Content: `{"bindPort":7000}`, AutoStart: true},
@@ -27,7 +27,7 @@ func TestSyncMissingConfigsRestoresBothRolesWithoutReplacingLocalFile(t *testing
 	}))
 	defer server.Close()
 
-	cfg := &Config{DataDir: t.TempDir(), PanelURL: server.URL, NodeKey: "key", Secret: "secret", Roles: "frpc,frps", Runtime: "process"}
+	cfg := &Config{DataDir: t.TempDir(), PanelURL: server.URL, NodeKey: "key", Secret: "secret", Roles: "frpc", Runtime: "process"}
 	agent := New(cfg)
 	local := Target{Type: proto.TargetNode, ID: 3}
 	if err := os.WriteFile(cfg.ConfigPath(local), []byte(`{"serverAddr":"local.example"}`), 0o600); err != nil {
@@ -45,7 +45,6 @@ func TestSyncMissingConfigsRestoresBothRolesWithoutReplacingLocalFile(t *testing
 		stopped bool
 	}{
 		{Target{Type: proto.TargetNode, ID: 1}, configs[0].Content, 3, true, true},
-		{Target{Type: proto.TargetServer, ID: 2}, configs[1].Content, 4, true, false},
 	} {
 		data, err := os.ReadFile(cfg.ConfigPath(expected.target))
 		if err != nil || string(data) != expected.content {
@@ -65,6 +64,9 @@ func TestSyncMissingConfigsRestoresBothRolesWithoutReplacingLocalFile(t *testing
 	}
 	if _, ok := agent.trackedState(targetKey(local)); ok {
 		t.Fatal("已有配置的启动状态不应被面板快照改写")
+	}
+	if _, err := os.Stat(cfg.ConfigPath(Target{Type: proto.TargetServer, ID: 2})); !os.IsNotExist(err) {
+		t.Fatalf("客户端 Agent 不应恢复服务端配置，结果：%v", err)
 	}
 }
 

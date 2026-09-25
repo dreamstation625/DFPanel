@@ -33,11 +33,11 @@ func TestEnsurePanelCache(t *testing.T) {
 	}
 
 	// 面板一份都没下载：拦下来，并把缺哪一份、去哪下载说清楚
-	err := h.ensurePanelCache(&model.Agent{OS: "linux", Arch: "amd64", Roles: "frps,frpc"}, "0.62.1")
+	err := h.ensurePanelCache(&model.Agent{OS: "linux", Arch: "amd64", Roles: "frpc"}, "0.62.1")
 	if err == nil {
 		t.Fatal("面板没有缓存时应当报错")
 	}
-	for _, want := range []string{"frps", "frpc", "0.62.1", "linux/amd64", "设置"} {
+	for _, want := range []string{"frpc", "0.62.1", "linux/amd64", "设置"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("错误提示要包含 %q，实际：%v", want, err)
 		}

@@ -39,8 +39,9 @@ func NewClient(cfg *Config) *Client {
 // authQuery 生成带签名的查询串
 func (c *Client) authQuery() string {
 	ts := time.Now().Unix()
-	return fmt.Sprintf("nodeKey=%s&ts=%d&sign=%s",
-		url.QueryEscape(c.cfg.NodeKey), ts, proto.Sign(c.cfg.Secret, c.cfg.NodeKey, ts))
+	return fmt.Sprintf("nodeKey=%s&ts=%d&sign=%s&instanceId=%s&hostId=%s&role=%s",
+		url.QueryEscape(c.cfg.NodeKey), ts, proto.Sign(c.cfg.Secret, c.cfg.NodeKey, ts),
+		url.QueryEscape(c.cfg.InstanceID), url.QueryEscape(c.cfg.HostID), url.QueryEscape(c.cfg.Roles))
 }
 
 func (c *Client) api(path string) string {
@@ -61,6 +62,7 @@ func (c *Client) Register(version, hostname string) error {
 		"arch":     runtime.GOARCH,
 		"roles":    c.cfg.Roles,
 		"runtime":  c.cfg.Runtime,
+		"hostId":   c.cfg.HostID,
 	}, &out)
 }
 

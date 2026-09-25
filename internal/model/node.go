@@ -85,7 +85,7 @@ type Node struct {
 	Metadatas string `gorm:"type:text" json:"metadatas"`
 
 	// AgentID 托管该节点 frpc 的 Agent（frpc 永远由 Agent 承载）
-	AgentID uint `gorm:"index" json:"agentId"`
+	AgentID uint `gorm:"uniqueIndex:idx_node_agent,where:agent_id > 0" json:"agentId"`
 
 	// AutoStart Agent 重启后是否自动拉起该 frpc
 	AutoStart bool `gorm:"default:false" json:"autoStart"`

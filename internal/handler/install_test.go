@@ -190,9 +190,10 @@ func TestInstallCommandsCarryFrpVersion(t *testing.T) {
 	if !strings.Contains(res.Compose, "DFPANEL_FRPVERSION: 0.71.0") {
 		t.Errorf("compose 片段应带上版本：%s", res.Compose)
 	}
-	// docker 运行时的数据目录用当前目录（相对 compose 文件），不用写死的 /opt/...
-	if !strings.Contains(res.Compose, "./dfpanel-agent-data:/var/lib/dfpanel-agent") {
-		t.Errorf("compose 的数据目录应挂当前目录下的相对路径：%s", res.Compose)
+	// 同机多个 Agent 必须各自使用独立容器名和宿主数据目录。
+	if !strings.Contains(res.Compose, "/opt/dfpanel-agent/KEY:/var/lib/dfpanel-agent") ||
+		!strings.Contains(res.Compose, "container_name: dfpanel-agent-KEY") {
+		t.Errorf("compose 的实例隔离信息不正确：%s", res.Compose)
 	}
 	if strings.Contains(res.Compose, "DFPANEL_HOST_DATA_DIR") {
 		t.Errorf("compose 不该出现宿主数据目录（容器内的文件用 docker cp 送）：%s", res.Compose)

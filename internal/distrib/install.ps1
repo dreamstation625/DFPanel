@@ -1,16 +1,17 @@
 ﻿# DFPanel Agent 一键安装 / 卸载脚本（Windows）
 # 用法：
 #   安装：
-#     powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:7226/install.ps1 -OutFile install.ps1; .\install.ps1 -Panel http://<panel>:7226 -NodeKey <KEY> -NodeSecret <SECRET> -Roles frps,frpc"
+#     powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:7226/install.ps1 -OutFile install.ps1; .\install.ps1 -Panel http://<panel>:7226 -NodeKey <KEY> -NodeSecret <SECRET> -Roles frpc"
 #   卸载：
-#     .\install.ps1 -Uninstall [-Purge]
+#     .\install.ps1 -Uninstall -Instance <KEY> [-Purge]
 #       -Uninstall  停止托管的 frp 实例、注销计划任务、删除配置与二进制；默认保留数据目录
 #       -Purge      连数据目录一起删（frp 二进制缓存等）
 param(
     [string]$Panel,
     [string]$NodeKey,
     [string]$NodeSecret,
-    [string]$Roles = "frpc",
+    [string]$Instance = "",
+    [ValidateSet("frps", "frpc")][string]$Roles = "frpc",
     [ValidateSet("process", "docker")][string]$Runtime = "process",
     # 期望的 frp 版本，由面板在安装命令里带上；留空表示不指定，Agent 启动时取面板的 latest
     [string]$FrpVersion = "",
@@ -20,12 +21,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# ProgramData 下写入可避开 Program Files 的 UAC 限制
-$BaseDir    = Join-Path $env:ProgramData "dfpanel-agent"
+# 每个 nodeKey 独立服务、程序和数据目录，同机部署不会覆盖其它 Agent。
+if (-not $Instance) { $Instance = $NodeKey }
+if ($Instance -notmatch '^[A-Za-z0-9_-]{8,64}$') { throw "请提供有效的 -Instance（安装时的 nodeKey）" }
+$BaseRoot   = Join-Path $env:ProgramData "dfpanel-agent"
+$BaseDir    = Join-Path $BaseRoot $Instance
 $DataDir    = Join-Path $BaseDir "data"
 $ConfigPath = Join-Path $BaseDir "agent.json"
 $ExePath    = Join-Path $BaseDir "dfpanel-agent.exe"
-$TaskName   = "DFPanelAgent"
+$TaskName   = "DFPanelAgent-$Instance"
 
 # ---------------- 卸载 ----------------
 # Agent 退出不会带走自己拉起的 frp（这样重启时隧道不中断），所以这里要按 pid 文件显式收干净。
@@ -51,10 +55,10 @@ if ($Uninstall) {
     }
 
     if (Get-Command docker -ErrorAction SilentlyContinue) {
-        $containers = docker ps -aq --filter "name=dfpanel-frps-" --filter "name=dfpanel-frpc-" 2>$null
-        if ($containers) {
-            docker rm -f $containers > $null 2>&1
-            Write-Host "==> 已清理 frp 容器"
+        foreach ($config in (Get-ChildItem -LiteralPath $DataDir -Filter "frp*.json" -ErrorAction SilentlyContinue)) {
+            if ($config.BaseName -match '^frp[sc]-\d+$') {
+                docker rm -f "dfpanel-$($config.BaseName)" > $null 2>&1
+            }
         }
     }
 

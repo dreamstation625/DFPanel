@@ -25,7 +25,7 @@ const (
 	logTailBytes      = 64 * 1024
 )
 
-// Agent 远端守护程序：一个进程同时可托管多个 frps 与 frpc
+// Agent 远端守护程序：每个安装实例仅托管一个角色和一个目标
 type Agent struct {
 	cfg    *Config
 	client *Client
@@ -170,6 +170,11 @@ func (a *Agent) handleCommand(cmd proto.CommandData) proto.ResultData {
 	t := Target{Type: cmd.TargetType, ID: cmd.TargetID}
 
 	switch cmd.Type {
+	case proto.CmdUnassign:
+		if err := a.unassign(t); err != nil {
+			return proto.ResultData{Message: "清理托管实例失败：" + err.Error()}
+		}
+		return proto.ResultData{OK: true, Message: "托管实例已停止并清理"}
 	case proto.CmdApply:
 		a.applyAutoStartFlag(t, cmd.Flags)
 		out := a.ApplyConfig(t, cmd.Payload, cmd.Version)

@@ -17,7 +17,7 @@ import {
  * 面板缺这个版本时切换会直接被拒绝。
  */
 const props = defineProps<{
-  /** 目标类型：local = 面板本机 frps；agent = 远端 Agent（该 Agent 上 frps 与 frpc 共用一个版本） */
+  /** 目标类型：local = 面板本机 frps；agent = 单独托管一个服务端或节点的远端 Agent */
   target: 'local' | 'agent'
   /** Agent 模式下必填 */
   targetId?: number
@@ -179,7 +179,7 @@ async function run(action: 'download' | 'activate') {
         type="info"
         :closable="false"
         show-icon
-        title="frps 与 frpc 共用一个版本"
+        title="此版本只应用于当前 Agent"
         :description="switchHint"
         style="margin-bottom: 14px"
       />

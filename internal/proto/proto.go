@@ -26,6 +26,7 @@ const (
 	CmdApply         = "apply"
 	CmdStart         = "start"
 	CmdStop          = "stop"
+	CmdUnassign      = "unassign" // 删除绑定前停止实例并清除本地配置
 	CmdRestart       = "restart"
 	CmdLog           = "log"
 	CmdRollback      = "rollback"       // 回滚到指定历史版本（payload: {"targetVersion":N}）
@@ -98,7 +99,7 @@ type HeartbeatData struct {
 	Targets  []TargetState `json:"targets"`
 	// Runtime 该 Agent 的运行时：process（直接起子进程）/ docker（起容器）
 	Runtime string `json:"runtime,omitempty"`
-	// FrpVersion active 槽位当前生效的 frp 版本（该 Agent 上 frps 与 frpc 共用一个版本）
+	// FrpVersion 当前 Agent 托管实例的 active frp 版本
 	FrpVersion string `json:"frpVersion,omitempty"`
 	// FrpCached 本地已缓存的 frp 版本列表
 	FrpCached []string `json:"frpCached,omitempty"`

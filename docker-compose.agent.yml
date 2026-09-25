@@ -1,6 +1,6 @@
-# DFPanel Agent 部署（同一容器可同时托管 frps 与 frpc）
+# DFPanel Agent 部署（一个容器只托管一个 frps 或 frpc）
 # 启动：docker compose -f docker-compose.agent.yml up -d
-# 令牌请在面板「客户端节点 / Agent」页面创建后复制，或直接用面板生成的 docker run 指令
+# 先在 .env 设置 DFPANEL_NODE_KEY、DFPANEL_NODE_SECRET 和 DFPANEL_ROLES；每个 Agent 使用独立 nodeKey。
 
 services:
   dfpanel-agent:
@@ -8,7 +8,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.agent
-    container_name: dfpanel-agent
+    container_name: dfpanel-agent-${DFPANEL_NODE_KEY:?set_node_key}
     restart: unless-stopped
 
     # host 网络最简单：frps 监听宿主端口、frpc 可直接穿透宿主服务
@@ -17,22 +17,17 @@ services:
 
     environment:
       DFPANEL_URL: "http://192.168.1.10:7226"
-      DFPANEL_NODE_KEY: "在此粘贴 nodeKey"
-      DFPANEL_NODE_SECRET: "在此粘贴 secret"
-      # 角色：frps / frpc / frps,frpc
-      DFPANEL_ROLES: "frps,frpc"
+      DFPANEL_NODE_KEY: ${DFPANEL_NODE_KEY:?set_node_key}
+      DFPANEL_NODE_SECRET: ${DFPANEL_NODE_SECRET:?set_node_secret}
+      # 类型只能是 frps 或 frpc
+      DFPANEL_ROLES: ${DFPANEL_ROLES:-frpc}
       # process = 容器内直接跑 frps/frpc 子进程（默认）；docker = 用 docker CLI 起容器
       # 两种运行时的 frp 二进制都由面板下发，Agent 首次需要时自动下载
       DFPANEL_RUNTIME: "process"
       TZ: "Asia/Shanghai"
 
     volumes:
-      # DFPANEL_RUNTIME=docker：数据目录必须用宿主机路径 —— frp 容器要 bind-mount Agent
-      # 容器里的配置与 frp 二进制，宿主机的 docker daemon 得直接看得见这些文件；
-      # 命名卷在宿主机上没有对应路径，挂不进去。同时挂上 docker.sock：
-      # - /opt/dfpanel-agent:/var/lib/dfpanel-agent
+      - /opt/dfpanel-agent/${DFPANEL_NODE_KEY:?set_node_key}:/var/lib/dfpanel-agent
+      - /etc/machine-id:/host/etc/machine-id:ro
+      # DFPANEL_RUNTIME=docker 时启用：
       # - /var/run/docker.sock:/var/run/docker.sock
-      - agent-data:/var/lib/dfpanel-agent
-
-volumes:
-  agent-data:

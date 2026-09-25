@@ -23,6 +23,7 @@ services:
 
     volumes:
       - ./data:/data
+      - /etc/machine-id:/host/etc/machine-id:ro
     environment:
       DFPANEL_LISTEN: ":7226"
       DFPANEL_DATA_DIR: "/data"

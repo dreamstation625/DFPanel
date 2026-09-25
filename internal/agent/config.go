@@ -2,6 +2,8 @@
 package agent
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"strings"
 
 	"dfpanel/internal/distrib"
+	"dfpanel/internal/hostid"
 )
 
 // Config agent.json 结构；同名环境变量优先级更高，便于容器化部署
@@ -19,10 +22,12 @@ type Config struct {
 	PanelURL   string `json:"panel_url"`
 	NodeKey    string `json:"node_key"`
 	Secret     string `json:"secret"`
-	Roles      string `json:"roles"`     // 逗号分隔：frps / frpc，两者可并存
-	Runtime    string `json:"runtime"`   // process = 直接起进程；docker = 起容器
+	Roles      string `json:"roles"`    // 单一类型：frps 或 frpc
+	Runtime    string `json:"runtime"`  // process = 直接起进程；docker = 起容器
 	DataDir    string `json:"data_dir"` // 配置与日志目录
 	FRPVersion string `json:"frp_version"`
+	InstanceID string `json:"-"`
+	HostID     string `json:"-"`
 	// 容器化运行时使用的镜像，留空取默认值
 	FrpsImage string `json:"frps_image"`
 	FrpcImage string `json:"frpc_image"`
@@ -64,6 +69,9 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Roles == "" {
 		cfg.Roles = "frpc"
 	}
+	if cfg.Roles != "frpc" && cfg.Roles != "frps" {
+		return nil, errors.New("Agent 类型只能是 frps 或 frpc")
+	}
 	if cfg.Runtime == "" {
 		cfg.Runtime = "process"
 	}
@@ -82,6 +90,12 @@ func LoadConfig(path string) (*Config, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("创建数据目录失败：%w", err)
 	}
+	instanceID, err := loadInstanceID(cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("读取安装实例标识失败：%w", err)
+	}
+	cfg.InstanceID = instanceID
+	cfg.HostID = hostid.Current()
 
 	if cfg.PanelURL == "" || cfg.NodeKey == "" || cfg.Secret == "" {
 		return nil, errors.New("缺少必填配置：panel_url / node_key / secret")
@@ -90,14 +104,42 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
+func loadInstanceID(dataDir string) (string, error) {
+	path := filepath.Join(dataDir, "instance-id")
+	if raw, err := os.ReadFile(path); err == nil {
+		value := strings.TrimSpace(string(raw))
+		if len(value) != 32 {
+			return "", fmt.Errorf("实例标识文件格式不正确：%s", path)
+		}
+		if _, err := hex.DecodeString(value); err != nil {
+			return "", err
+		}
+		return value, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if os.IsExist(err) {
+		return loadInstanceID(dataDir)
+	}
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	id := hex.EncodeToString(value)
+	if _, err := f.WriteString(id + "\n"); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
 // HasRole 判断是否承担指定角色
 func (c *Config) HasRole(role string) bool {
-	for _, r := range strings.Split(c.Roles, ",") {
-		if strings.TrimSpace(r) == role {
-			return true
-		}
-	}
-	return false
+	return c.Roles == role
 }
 
 func defaultDataDir() string {

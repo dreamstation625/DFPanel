@@ -109,7 +109,7 @@ type FrpsServer struct {
 	// 部署模式：local = 面板本机一体化托管；agent = 由远端 Agent 托管
 	DeployMode string `gorm:"size:16;default:local" json:"deployMode"`
 	// AgentID 部署模式为 agent 时，指定由哪个 Agent 承载
-	AgentID uint `gorm:"index" json:"agentId"`
+	AgentID uint `gorm:"index;uniqueIndex:idx_server_agent_unique,where:deploy_mode = 'agent' AND agent_id > 0" json:"agentId"`
 	// PublicAddr frps 对外地址（frpc 连接用），留空时取面板访问地址
 	PublicAddr string `gorm:"size:128" json:"publicAddr"`
 

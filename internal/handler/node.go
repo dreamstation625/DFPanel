@@ -55,7 +55,7 @@ func (h *NodeHandler) Create(c *gin.Context) {
 		return
 	}
 	// 客户端节点必须由 Agent 承载，因此要求先有可用的 Agent
-	if err := requireManagedAgent(n.AgentID); err != nil {
+	if err := requireManagedAgent(n.AgentID, 0); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -81,7 +81,7 @@ func (h *NodeHandler) Create(c *gin.Context) {
 //
 // 客户端节点（frpc）永远由 Agent 承载，没有 Agent 就没有任何机器能跑这个 frpc，
 // 所以创建 / 保存节点时必须已经存在一个具备 frpc 角色的 Agent。
-func requireManagedAgent(agentID uint) error {
+func requireManagedAgent(agentID, excludeNodeID uint) error {
 	if agentID == 0 {
 		return errString("请先选择托管 Agent：客户端节点必须由 Agent 承载，请先到「Agent 管理」创建并在目标机器上安装 Agent")
 	}
@@ -90,7 +90,14 @@ func requireManagedAgent(agentID uint) error {
 		return errString("所选的 Agent 不存在，请重新选择")
 	}
 	if !a.HasRole("frpc") {
-		return errString("Agent「" + a.Name + "」未启用 frpc 角色，无法承载客户端节点；请先在该 Agent 上勾选 frpc 角色")
+		return errString("Agent「" + a.Name + "」不是客户端 Agent")
+	}
+	var count int64
+	if err := database.DB.Model(&model.Node{}).Where("agent_id = ? AND id <> ?", agentID, excludeNodeID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return errString("该客户端 Agent 已绑定一个节点，请选择未绑定的 Agent")
 	}
 	return nil
 }
@@ -108,7 +115,11 @@ func (h *NodeHandler) Update(c *gin.Context) {
 		return
 	}
 	// 与创建保持一致：保存时也必须绑定可用的 Agent（顺带让历史遗留的未绑定节点补绑）
-	if err := requireManagedAgent(req.AgentID); err != nil {
+	if old.AgentID != 0 && req.AgentID != old.AgentID {
+		c.JSON(http.StatusConflict, gin.H{"error": "已创建节点不能更换 Agent；请停止并删除旧节点后重新创建"})
+		return
+	}
+	if err := requireManagedAgent(req.AgentID, old.ID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -134,11 +145,31 @@ func (h *NodeHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
 		return
 	}
-	if err := database.DB.Delete(&model.Node{}, id).Error; err != nil {
+	var n model.Node
+	if err := database.DB.First(&n, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+		return
+	}
+	queued := false
+	if n.AgentID != 0 {
+		res, err := dispatch(h.hub, &model.AgentCommand{
+			AgentID: n.AgentID, Type: proto.CmdUnassign, TargetType: proto.TargetNode, TargetID: n.ID,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !res.OK && !res.Queued {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": res.Message})
+			return
+		}
+		queued = res.Queued
+	}
+	if err := database.DB.Delete(&n).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
+	c.JSON(http.StatusOK, gin.H{"message": "已删除", "cleanupQueued": queued})
 }
 
 // Preview GET /api/nodes/:id/config 预览 frpc.json

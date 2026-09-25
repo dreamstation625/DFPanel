@@ -3,9 +3,9 @@
 # 用法：
 #   安装：
 #     curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- \
-#       --panel http://<panel>:7226 --node-key <KEY> --secret <SECRET> --roles frps,frpc
+#       --panel http://<panel>:7226 --node-key <KEY> --secret <SECRET> --roles frpc
 #   卸载：
-#     curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- --uninstall [--purge]
+#     curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- --uninstall --instance <KEY> [--purge]
 set -euo pipefail
 
 PANEL=""
@@ -18,14 +18,16 @@ FRP_VERSION=""
 INSTALL_DIR="/usr/local/bin"
 CONF_DIR="/etc/dfpanel-agent"
 DATA_DIR="/var/lib/dfpanel-agent"
+INSTANCE=""
+SERVICE_NAME=""
 UNINSTALL=0
 PURGE=0
 
 usage() {
   cat <<'EOF'
 用法:
-  安装: install.sh --panel <面板地址> --node-key <安装令牌> --secret <密钥> [--roles frps,frpc] [--runtime process|docker] [--frp-version x.y.z]
-  卸载: install.sh --uninstall [--purge]
+  安装: install.sh --panel <面板地址> --node-key <安装令牌> --secret <密钥> [--roles frps|frpc] [--runtime process|docker] [--frp-version x.y.z]
+  卸载: install.sh --uninstall --instance <安装令牌> [--purge]
     --uninstall  停止托管的 frp 实例、注销服务、删除配置与二进制；默认保留数据目录
     --purge      卸载时连数据目录一起删（frp 二进制缓存等）
 EOF
@@ -37,11 +39,11 @@ do_uninstall() {
   echo "==> 停止并注销服务"
 
   if [[ "$OS" == "linux" ]] && command -v systemctl >/dev/null 2>&1; then
-    systemctl disable --now dfpanel-agent >/dev/null 2>&1 || true
-    rm -f /etc/systemd/system/dfpanel-agent.service
+    systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
+    rm -f "/etc/systemd/system/$SERVICE_NAME.service"
     systemctl daemon-reload >/dev/null 2>&1 || true
   elif [[ "$OS" == "darwin" ]]; then
-    PLIST="$HOME/Library/LaunchAgents/com.dfpanel.agent.plist"
+    PLIST="$HOME/Library/LaunchAgents/com.dfpanel.agent.$INSTANCE.plist"
     launchctl unload -w "$PLIST" >/dev/null 2>&1 || true
     rm -f "$PLIST"
   else
@@ -64,16 +66,18 @@ do_uninstall() {
   done
 
   if command -v docker >/dev/null 2>&1; then
-    ids="$(docker ps -aq --filter 'name=dfpanel-frps-' --filter 'name=dfpanel-frpc-' 2>/dev/null || true)"
-    if [[ -n "$ids" ]]; then
-      # shellcheck disable=SC2086
-      docker rm -f $ids >/dev/null 2>&1 || true
-    fi
+    local config container
+    for config in "$DATA_DIR"/frps-*.json "$DATA_DIR"/frpc-*.json; do
+      [[ -f "$config" ]] || continue
+      container="dfpanel-$(basename "$config" .json)"
+      docker rm -f "$container" >/dev/null 2>&1 || true
+    done
   fi
 
   echo "==> 删除配置与二进制"
   rm -f "$INSTALL_DIR/dfpanel-agent" "$CONF_DIR/agent.json"
   rmdir "$CONF_DIR" >/dev/null 2>&1 || true
+  rmdir "$INSTALL_DIR" >/dev/null 2>&1 || true
 
   if [[ "$PURGE" -eq 1 ]]; then
     rm -rf "$DATA_DIR"
@@ -89,6 +93,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --panel)      PANEL="$2"; shift 2 ;;
     --node-key)   NODE_KEY="$2"; shift 2 ;;
+    --instance)   INSTANCE="$2"; shift 2 ;;
     --secret)     NODE_SECRET="$2"; shift 2 ;;
     --roles)      ROLES="$2"; shift 2 ;;
     --runtime)    RUNTIME="$2"; shift 2 ;;
@@ -106,6 +111,15 @@ if [[ "$UNINSTALL" -eq 0 ]]; then
     usage
     exit 1
   fi
+fi
+if [[ -z "$INSTANCE" ]]; then INSTANCE="$NODE_KEY"; fi
+if [[ ! "$INSTANCE" =~ ^[A-Za-z0-9_-]{8,64}$ ]]; then
+  echo "请提供有效的 --instance（安装时的 nodeKey），卸载不能省略" >&2
+  exit 1
+fi
+if [[ "$UNINSTALL" -eq 0 && "$ROLES" != "frps" && "$ROLES" != "frpc" ]]; then
+  echo "--roles 只能是 frps 或 frpc" >&2
+  exit 1
 fi
 PANEL="${PANEL%/}"
 
@@ -128,6 +142,10 @@ if [[ "$OS" == "darwin" ]]; then
   CONF_DIR="/usr/local/etc/dfpanel-agent"
   DATA_DIR="/usr/local/var/dfpanel-agent"
 fi
+INSTALL_DIR="/usr/local/lib/dfpanel-agent/$INSTANCE"
+CONF_DIR="$CONF_DIR/$INSTANCE"
+DATA_DIR="$DATA_DIR/$INSTANCE"
+SERVICE_NAME="dfpanel-agent-$INSTANCE"
 
 if [[ "$UNINSTALL" -eq 1 ]]; then
   echo "==> 卸载 DFPanel Agent（$OS）"
@@ -180,7 +198,7 @@ chmod 600 "$CONF_DIR/agent.json"
 
 if [[ "$OS" == "linux" ]] && command -v systemctl >/dev/null 2>&1; then
   echo "==> 注册 systemd 服务"
-  cat > /etc/systemd/system/dfpanel-agent.service <<EOF
+  cat > "/etc/systemd/system/$SERVICE_NAME.service" <<EOF
 [Unit]
 Description=DFPanel Agent
 After=network-online.target
@@ -197,19 +215,20 @@ WorkingDirectory=$DATA_DIR
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now dfpanel-agent
+  systemctl enable "$SERVICE_NAME"
+  systemctl restart "$SERVICE_NAME"
   echo "==> 安装完成，服务状态："
-  systemctl --no-pager status dfpanel-agent | head -n 12 || true
+  systemctl --no-pager status "$SERVICE_NAME" | head -n 12 || true
 elif [[ "$OS" == "darwin" ]]; then
   echo "==> 注册 launchd 服务"
-  PLIST="$HOME/Library/LaunchAgents/com.dfpanel.agent.plist"
+  PLIST="$HOME/Library/LaunchAgents/com.dfpanel.agent.$INSTANCE.plist"
   mkdir -p "$HOME/Library/LaunchAgents"
   cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.dfpanel.agent</string>
+  <key>Label</key><string>com.dfpanel.agent.$INSTANCE</string>
   <key>ProgramArguments</key>
   <array>
     <string>$INSTALL_DIR/dfpanel-agent</string>
@@ -225,9 +244,10 @@ elif [[ "$OS" == "darwin" ]]; then
 EOF
   launchctl unload "$PLIST" 2>/dev/null || true
   launchctl load -w "$PLIST"
-  echo "==> 安装完成（launchd: com.dfpanel.agent）"
+  echo "==> 安装完成（launchd: com.dfpanel.agent.$INSTANCE）"
 else
   echo "==> 未检测到 systemd，直接后台启动"
+  pkill -f "$INSTALL_DIR/dfpanel-agent" >/dev/null 2>&1 || true
   nohup "$INSTALL_DIR/dfpanel-agent" --config "$CONF_DIR/agent.json" >>"$DATA_DIR/agent.log" 2>&1 &
   echo "==> 安装完成"
 fi

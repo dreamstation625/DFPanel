@@ -107,8 +107,7 @@ func (a *Agent) versionedPath(kind, version, goos, goarch string) string {
 
 // frpStatus 当前 active 版本与本地已缓存的版本
 //
-// 版本粒度按 Agent 统一：frps 与 frpc 共用一个版本，因此这里取两者交集信息，
-// active 版本以先能读到的角色为准（正常情况下两者一致）。
+// 版本粒度按 Agent 实例独立管理；当前实例只启用 frps 或 frpc 一种类型。
 func (a *Agent) frpStatus() (string, []string) {
 	active := ""
 	seen := map[string]bool{}
@@ -199,8 +198,9 @@ func (a *Agent) ensureVersionedBinary(kind, version string) (string, string, err
 // ensureRuntimeBinary 确保当前运行时需要的 frp 二进制就绪，缺失时从面板拉取。
 //
 // 镜像与安装包都不再内置 frp，二进制一律由面板下发：
-//   process → 版本化二进制切到 <dataDir>/<kind>[.exe] 槽位
-//   docker  → 切到容器槽位（<binDir>/<kind>-container-<os>-<arch>），启动时挂进容器
+//
+//	process → 版本化二进制切到 <dataDir>/<kind>[.exe] 槽位
+//	docker  → 切到容器槽位（<binDir>/<kind>-container-<os>-<arch>），启动时挂进容器
 //
 // 返回 true 表示这次新补了槽位 —— 控制器里缓存的 spec 还是「没有二进制」的老样子，
 // 调用方需要重建控制器才能带上挂载信息。
@@ -274,10 +274,9 @@ func (a *Agent) activateSlot(kind, slot, version, goos, goarch string) error {
 	return err
 }
 
-// handleFrpActivate 把指定版本切为 active 槽位，并重启该 Agent 上全部托管实例。
+// handleFrpActivate 把指定版本切为 active 槽位，并重启该 Agent 的托管实例。
 //
-// 由于 frps 与 frpc 共用一个版本，切换是「整体」行为：
-// 先停全部实例（Windows 下运行中的 exe 被占用无法替换；容器则顺带释放挂载）
+// 先停托管实例（Windows 下运行中的 exe 被占用无法替换；容器则顺带释放挂载）
 // → 换槽位 → 逐个拉起并做健康探测；任一实例判定为明确故障则整体切回旧版本并重启，
 // 保证不会把服务留在坏版本上。
 //

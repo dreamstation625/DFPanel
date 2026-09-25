@@ -212,6 +212,11 @@ export interface ApplyResult {
   status?: string
 }
 
+export interface DeleteResult {
+  message: string
+  cleanupQueued?: boolean
+}
+
 // 下发配置耗时较长（Agent 需重启并做健康探测，失败还要回滚），单独放大超时
 const APPLY_TIMEOUT = 180000
 
@@ -219,7 +224,7 @@ export const serverApi = {
   list: () => request.get<unknown, FrpsServer[]>('/servers'),
   create: (data: FrpsServer) => request.post<unknown, FrpsServer>('/servers', data),
   update: (id: number, data: FrpsServer) => request.post<unknown, FrpsServer>(`/servers/${id}/update`, data),
-  remove: (id: number) => request.post(`/servers/${id}/delete`),
+  remove: (id: number) => request.post<unknown, DeleteResult>(`/servers/${id}/delete`),
   preview: (id: number) => request.get<unknown, { content: string }>(`/servers/${id}/config`),
   apply: (id: number) => request.post<unknown, ApplyResult>(`/servers/${id}/apply`, null, { timeout: APPLY_TIMEOUT }),
   start: (id: number) => request.post<unknown, ApplyResult>(`/servers/${id}/start`, null, { timeout: APPLY_TIMEOUT }),
@@ -234,7 +239,7 @@ export const serverApi = {
     request.post<unknown, ApplyResult>(`/servers/${id}/rollback`, { version }, { timeout: APPLY_TIMEOUT }),
 }
 
-/** 托管 Agent（一台机器上的守护进程，可同时承载 frps 与 frpc） */
+/** 托管 Agent（一个安装实例，只承载一个 frps 或 frpc） */
 export interface AgentInfo {
   id: number
   name: string
@@ -242,6 +247,7 @@ export interface AgentInfo {
   nodeKey: string
   secret: string
   roles: string
+  hostId: string
   /** 运行时：process（直起子进程）/ docker（起容器） */
   runtime: string
   os: string
@@ -498,7 +504,7 @@ export const nodeApi = {
   list: () => request.get<unknown, NodeInfo[]>('/nodes'),
   create: (data: Partial<NodeInfo>) => request.post<unknown, NodeInfo>('/nodes', data),
   update: (id: number, data: Partial<NodeInfo>) => request.post<unknown, NodeInfo>(`/nodes/${id}/update`, data),
-  remove: (id: number) => request.post(`/nodes/${id}/delete`),
+  remove: (id: number) => request.post<unknown, DeleteResult>(`/nodes/${id}/delete`),
   preview: (id: number) => request.get<unknown, { content: string }>(`/nodes/${id}/config`),
   apply: (id: number) => request.post<unknown, ApplyResult>(`/nodes/${id}/apply`, null, { timeout: APPLY_TIMEOUT }),
   start: (id: number) => request.post<unknown, ApplyResult>(`/nodes/${id}/start`, null, { timeout: APPLY_TIMEOUT }),

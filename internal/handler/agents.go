@@ -12,6 +12,7 @@ import (
 	"dfpanel/internal/database"
 	"dfpanel/internal/distrib"
 	"dfpanel/internal/model"
+	"dfpanel/internal/proto"
 )
 
 // AgentManageHandler Agent 管理面接口（JWT 鉴权）
@@ -53,7 +54,7 @@ func (h *AgentManageHandler) Get(c *gin.Context) {
 type createAgentReq struct {
 	Name       string `json:"name"`
 	Remark     string `json:"remark"`
-	Roles      string `json:"roles"`      // frps / frpc / frps,frpc
+	Roles      string `json:"roles"`      // frps / frpc，二者互斥
 	FrpVersion string `json:"frpVersion"` // 选填：创建后先把该版本的 frp 二进制预置到目标机器，不切换、不重启
 }
 
@@ -64,6 +65,10 @@ func (h *AgentManageHandler) Create(c *gin.Context) {
 
 	if req.Roles == "" {
 		req.Roles = "frpc"
+	}
+	if req.Roles != "frps" && req.Roles != "frpc" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Agent 类型只能是 frps 或 frpc"})
+		return
 	}
 	if req.Name == "" {
 		req.Name = "Agent-" + time.Now().Format("20060102-150405")
@@ -120,6 +125,22 @@ func (h *AgentManageHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
 		return
 	}
+	if req.Roles != "frps" && req.Roles != "frpc" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Agent 类型只能是 frps 或 frpc"})
+		return
+	}
+	if req.Roles != old.Roles {
+		var count int64
+		if old.Roles == "frpc" {
+			database.DB.Model(&model.Node{}).Where("agent_id = ?", old.ID).Count(&count)
+		} else {
+			database.DB.Model(&model.FrpsServer{}).Where("deploy_mode = ? AND agent_id = ?", "agent", old.ID).Count(&count)
+		}
+		if count > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "Agent 已绑定托管对象，不能更改类型"})
+			return
+		}
+	}
 
 	// 编辑表单只包含这三个字段；其他状态由注册、心跳和版本操作维护。
 	// 整行 Save 会把未提交的 frp 实际版本、期望版本及运行时清空。
@@ -145,6 +166,24 @@ func (h *AgentManageHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
 		return
 	}
+	var bound int64
+	database.DB.Model(&model.Node{}).Where("agent_id = ?", id).Count(&bound)
+	if bound == 0 {
+		database.DB.Model(&model.FrpsServer{}).Where("deploy_mode = ? AND agent_id = ?", "agent", id).Count(&bound)
+	}
+	if bound > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "请先删除或解除该 Agent 托管的节点/服务端"})
+		return
+	}
+	if err := database.DB.Model(&model.AgentCommand{}).
+		Where("agent_id = ? AND type = ? AND status IN ?", id, proto.CmdUnassign, []string{"pending", "sent"}).Count(&bound).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "检查清理指令失败：" + err.Error()})
+		return
+	}
+	if bound > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "该 Agent 还有待执行的清理指令，请待其上线完成清理后再删除"})
+		return
+	}
 	if err := database.DB.Delete(&model.Agent{}, id).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败"})
 		return
@@ -162,7 +201,7 @@ func (h *AgentManageHandler) ResetToken(c *gin.Context) {
 	key := randomToken(16)
 	secret := randomToken(32)
 	if err := database.DB.Model(&model.Agent{}).Where("id = ?", a.ID).
-		Updates(map[string]any{"node_key": key, "secret": secret, "status": "offline"}).Error; err != nil {
+		Updates(map[string]any{"node_key": key, "secret": secret, "status": "offline", "instance_id": "", "host_id": ""}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "重置失败：" + err.Error()})
 		return
 	}

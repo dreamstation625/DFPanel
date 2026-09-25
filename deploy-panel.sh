@@ -199,6 +199,7 @@ services:
     network_mode: host
     volumes:
       - "$DATA_DIR:/data"
+      - /etc/machine-id:/host/etc/machine-id:ro
     environment:
       DFPANEL_LISTEN: "$LISTEN"
       DFPANEL_DATA_DIR: "/data"

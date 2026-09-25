@@ -1,7 +1,6 @@
 # DFPanel 分离式部署：Agent 架构与 Docker 部署
 
-> 本文描述本次新增的能力：面板可独立部署在任意服务器；frps 与 frpc 统一由远端 Agent 托管；
-> 同一个 Agent 既可承载 frps 也可承载 frpc；配置下发失败（连不上服务端）时自动回滚上一版配置。
+> 面板可独立部署；frps 与 frpc 可由独立 Agent 托管。一个服务端 Agent 只绑定一个 frps 服务端，一个客户端 Agent 只绑定一个 frpc 节点；同机可运行多个 Agent。配置下发出现明确故障时会回滚上一版。
 > 面板本机一体化托管（M1）保留为 `deployMode = local`，两种模式并存。
 
 ## 1. 拓扑
@@ -13,16 +12,17 @@
         └───────────────▲────────────────────────────────┘
                         │ Agent 主动反连（面板不主动外连）
          ┌──────────────┴───────────┐        ┌────────────────────┐
-         │  Agent（服务器 A）        │        │  Agent（服务器 B）   │
-         │  roles = frps,frpc       │        │  roles = frpc       │
-         │  ├ frps-1 (进程/容器)     │        │  └ frpc-7 (进程/容器)│
-         │  └ frpc-3 (进程/容器)     │        └────────────────────┘
-         └──────────────────────────┘
+         │  服务器 A                │        │  服务器 B           │
+         │  服务端 Agent → frps-1   │        │  客户端 Agent       │
+         │  客户端 Agent → frpc-3   │        │       → frpc-7      │
+         └──────────────────────────┘        └────────────────────┘
 ```
 
 - **面板可独立部署**：面板只存配置、发指令，不要求与 frps 同机。
 - **Agent 反连**：Agent 主动连面板，因此可以在 NAT / 内网之后，面板只需有一个可达地址。
-- **一个 Agent 多角色**：`DFPANEL_ROLES=frps,frpc`，同一进程同时托管多个 frps 实例与多个 frpc 节点，按 `targetType:targetId` 区分。
+- **单类型单绑定**：`DFPANEL_ROLES` 只能为 `frps` 或 `frpc`。面板创建服务端或节点时只能选择对应类型的空闲 Agent，数据库也限制同一 Agent 重复绑定。
+- **同机多 Agent**：各 Agent 使用不同安装令牌、服务名、容器名和数据目录。宿主标识用于检查同机 frps 监听端口冲突。
+- **实例身份**：首次启动在数据目录写入 `instance-id`；面板将安装令牌绑定到实例和宿主标识。另一份独立安装复用同一令牌、或将数据目录复制到另一台宿主机，都会被拒绝。
 
 ## 2. 组件
 
@@ -46,7 +46,7 @@
 - **长连接**：`GET /api/agent/ws`，Agent 主动反连；面板借此实时下发指令并接收结果。
 - **降级**：WebSocket 不可用时，Agent 轮询 `POST /api/agent/commands`（15s 级退避），结果通过 `POST /api/agent/report` 上报。
 - **离线排队**：Agent 离线时面板把指令写入 `agent_commands`（`pending`），Agent 上线后自动补发。
-- **鉴权**：`sign = HMAC-SHA256(secret, "nodeKey.ts")`，时间戳 ±5 分钟防重放，不依赖 Origin。
+- **鉴权**：`sign = HMAC-SHA256(secret, "nodeKey.ts")`，时间戳 ±5 分钟；请求还携带安装实例标识和角色，面板核对已绑定的身份。不依赖 Origin。
 
 消息信封：
 
@@ -56,7 +56,7 @@
     "payload": "{ frps 配置全文 }", "version": 3 } }
 ```
 
-指令类型：`apply` / `start` / `stop` / `restart` / `log` / `rollback`。
+指令类型：`apply` / `start` / `stop` / `restart` / `unassign` / `log` / `rollback`。删除节点或服务端时，`unassign` 会先停止并清理 Agent 本地配置；Agent 离线时排队，恢复连接后执行。
 
 ## 4. 配置应用与回滚（核心）
 
@@ -119,20 +119,23 @@ docker compose up -d            # 或：docker build -t dreamstation625/dfpanel:
 
 ### 5.2 Agent（Docker）
 
+复制本仓库的 `docker-compose.agent.yml` 后，在同目录创建 `.env`，分别填入面板提供的 `DFPANEL_NODE_KEY`、`DFPANEL_NODE_SECRET` 和角色 `DFPANEL_ROLES=frps` 或 `frpc`。同机多实例用不同 Compose 项目名（`-p`）与不同令牌；数据落在 `/opt/dfpanel-agent/<nodeKey>`。
+
 ```bash
-docker compose -f docker-compose.agent.yml up -d
+docker compose -p dfpanel-agent-<nodeKey> -f docker-compose.agent.yml up -d
 ```
 
 或直接运行（面板「Agent → 安装命令」会给出带令牌的现成命令）：
 
 ```bash
-docker run -d --name dfpanel-agent --restart unless-stopped \
+docker run -d --name dfpanel-agent-<nodeKey> --restart unless-stopped \
   -e DFPANEL_URL=http://<panel>:7226 \
   -e DFPANEL_NODE_KEY=<nodeKey> \
   -e DFPANEL_NODE_SECRET=<secret> \
-  -e DFPANEL_ROLES=frps,frpc \
+  -e DFPANEL_ROLES=frpc \
   -e DFPANEL_RUNTIME=process \
-  -v dfpanel-agent-data:/var/lib/dfpanel-agent \
+  -v /opt/dfpanel-agent/<nodeKey>:/var/lib/dfpanel-agent \
+  -v /etc/machine-id:/host/etc/machine-id:ro \
   --network host \
   dreamstation625/dfpanel-agent:latest
 ```
@@ -160,7 +163,8 @@ Agent 支持两种运行时，`DFPANEL_RUNTIME` 控制，对 frps 与 frpc 分�
 
 ```yaml
 volumes:
-  - ./dfpanel-agent-data:/var/lib/dfpanel-agent   # 相对 compose 文件所在目录
+  - /opt/dfpanel-agent/<nodeKey>:/var/lib/dfpanel-agent
+  - /etc/machine-id:/host/etc/machine-id:ro
   - /var/run/docker.sock:/var/run/docker.sock
 ```
 
@@ -187,10 +191,10 @@ compose 写相对路径时宿主的绝对路径又只有 daemon 知道，配置�
 ```bash
 # Linux / macOS（systemd / launchd 自动注册）
 curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- \
-  --panel http://<panel>:7226 --node-key <KEY> --secret <SECRET> --roles frps,frpc
+  --panel http://<panel>:7226 --node-key <KEY> --secret <SECRET> --roles frpc
 
 # Windows（计划任务开机自启）
-powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:7226/install.ps1 -OutFile install.ps1; .\install.ps1 -Panel http://<panel>:7226 -NodeKey <KEY> -NodeSecret <SECRET> -Roles frps,frpc"
+powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:7226/install.ps1 -OutFile install.ps1; .\install.ps1 -Panel http://<panel>:7226 -NodeKey <KEY> -NodeSecret <SECRET> -Roles frpc"
 ```
 
 分发端点：
@@ -226,7 +230,7 @@ dfpanel -agent-image myrepo/dfpanel-agent:0.2.0   # 生成安装命令时使用�
 
 ### 6.1 版本号与镜像发布
 
-版本号只有一个来源：根目录 `VERSION` 文件，从 `0.0.1` 起，当前为 `0.0.1-beta.02`。
+面板版本以根目录 `VERSION` 为准；Agent 版本以 `VERSION.agent` 为准，两者可独立发布。预发布版本号可以带 `-beta.N` 后缀，实际版本请直接查看这两个文件。
 
 | 形式 | 示例 | 镜像标签 | `latest` |
 |---|---|---|---|
@@ -240,10 +244,10 @@ dfpanel -agent-image myrepo/dfpanel-agent:0.2.0   # 生成安装命令时使用�
 | 位置 | 注入方式 | 查看方式 |
 |---|---|---|
 | 面板二进制 | `build.ps1` / `build.sh` 读取 `VERSION`，`-ldflags "-X main.version=<ver>"` | `dfpanel -version`、启动日志、侧边栏底部 |
-| Agent 二进制 | 同上，`-ldflags "-X dfpanel/internal/agent.Version=<ver>"` | 「Agent 管理」列表的版本列（随心跳上报） |
-| 面板 / Agent 镜像 | Dockerfile 构建阶段 `-ldflags "-X ...=$(cat VERSION)"` | `docker image inspect`、`dfpanel -version` |
+| Agent 二进制 | 构建脚本读取 `VERSION.agent` 并注入 `agent.Version` | 「Agent 管理」列表的版本列（随心跳上报） |
+| 面板 / Agent 镜像 | 分别使用 `VERSION` / `VERSION.agent` 构建对应程序 | `docker image inspect`、`dfpanel -version` |
 
-未注入时面板与 Agent 的版本均为 `dev`。面板版本号通过 `GET /api/init-status` 一并返回（`{"initialized": bool, "version": "0.0.1-beta.02"}`），前端在侧边栏底部展示，含 `-` 的预发布版本会单独标色。
+未注入时面板与 Agent 的版本均为 `dev`。面板版本号通过 `GET /api/init-status` 返回，前端在侧边栏底部展示。
 
 镜像发布由 `.github/workflows/docker.yml` 完成：
 
@@ -340,7 +344,7 @@ frps 服务端：`deployMode=agent` + `agentId` 时，`apply` / `start` / `stop`
 |---|---|---|
 | 概览 | `/dashboard` | frps / Agent / 节点统计，服务端与节点的部署位置与状态 |
 | frps 服务端 | `/server` | 多服务端配置：新建（自动挑选空闲端口）/ 下拉切换 / 保存 / 保存并应用 / 删除；部署模式切换（本机托管 / 远端 Agent 托管）、选择托管 Agent、填写 publicAddr；下发失败自动回滚有明确提示 |
-| Agent 管理 | `/agents` | 列表（在线状态、主机、版本、最后心跳）、创建/编辑（角色）、安装命令（Linux/Windows × 进程/Docker × 脚本/docker run/compose）、重置令牌、指令历史 |
+| Agent 管理 | `/agents` | 列表（在线状态、主机、版本、最后心跳）、创建/编辑（单一类型）、安装命令（Linux/Windows × 进程/Docker × 脚本/docker run/compose）、重置令牌、指令历史 |
 | 客户端节点 | `/nodes` | 节点 CRUD（绑定托管 Agent、关联 frps、连接地址、TLS、协议）、隧道管理抽屉、应用配置、启停重启、配置预览、日志、版本配置查看 |
 | 隧道 | 节点页抽屉 | tcp / udp / http / https / stcp / sudp / xtcp，本地与远端端口、域名/子域名、分组、加密压缩、启用开关 |
 
@@ -364,9 +368,9 @@ frps 服务端：`deployMode=agent` + `agentId` 时，`apply` / `start` / `stop`
 
 - 服务端可以建多个：`POST /api/servers` 新建，前端「新建服务端」会自动选择一个同机上未被占用的 `bindPort`（从 7000 起找空位）。
 - 端口冲突校验（后端 `checkPortConflict`，创建与更新都会校验）：
-  - **同一台机器**的定义 —— `deployMode=local` 都视为面板本机；`deployMode=agent` 按 `agentId` 区分。
+  - **同一台机器**的定义 —— 面板本机和 Agent 上报宿主标识；Linux 容器部署通过挂载 `/etc/machine-id` 识别同一宿主。其它无法自动识别的环境可统一设置 `DFPANEL_HOST_ID`。
   - 同机上的 `bindPort` 不能重复；两边都启用 Dashboard 时 `dashboardPort` 也不能重复。
-  - 不同机器（不同 Agent）可以使用相同端口，互不冲突。
+  - 不同机器可以使用相同端口；同一机器的不同 Agent 仍需错开端口。
 - 新建为草稿态（`id=0`），顶部标签显示「未保存」，预览 / 日志 / 启停按钮在保存前不可用；删除后自动选中剩余的第一个服务端。
 
 ## 9. 待办

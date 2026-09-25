@@ -76,8 +76,11 @@ const statusType = computed(() => (isNew.value ? 'info' : statusKind(current.val
 const statusLabel = computed(() => (isNew.value ? '未保存' : statusText(current.value?.status)))
 const agentRoleOk = computed(() => {
   const a = agents.value.find((item) => item.id === form.value.agentId)
-  return !!a && a.roles.split(',').includes('frps')
+  return !!a && a.roles === 'frps'
 })
+const availableFrpsAgents = computed(() => agents.value.filter((a) =>
+  a.roles === 'frps' && !list.value.some((s) => s.deployMode === 'agent' && s.agentId === a.id && s.id !== form.value.id),
+))
 
 async function load() {
   loading.value = true
@@ -315,7 +318,9 @@ async function copyDashboardPwd() {
 
 /** 同一台机器（本机托管 / 同一个 Agent）的服务端端口不能重复 */
 function hostKeyOf(s: { deployMode?: string; agentId?: number }) {
-  return s.deployMode === 'agent' ? `agent:${s.agentId || 0}` : 'local'
+  if (s.deployMode !== 'agent') return 'local'
+  const agent = agents.value.find((a) => a.id === s.agentId)
+  return agent?.hostId ? `host:${agent.hostId}` : `agent:${s.agentId || 0}`
 }
 
 /** 自动挑选同机上第一个空闲的监听端口 */
@@ -333,7 +338,9 @@ function createNew() {
   draft.name = `服务端-${list.value.length + 1}`
   // 沿用当前选择的部署位置，方便在同一台机器上批量添加
   draft.deployMode = form.value.deployMode === 'agent' ? 'agent' : 'local'
-  draft.agentId = draft.deployMode === 'agent' ? form.value.agentId : 0
+  draft.agentId = draft.deployMode === 'agent'
+    ? (agents.value.find((a) => a.roles === 'frps' && !list.value.some((s) => s.deployMode === 'agent' && s.agentId === a.id))?.id ?? 0)
+    : 0
   draft.bindPort = nextFreePort(hostKeyOf(draft))
   form.value = draft
   draftMode.value = true
@@ -345,8 +352,9 @@ async function removeServer() {
   const id = form.value.id
   if (!id) return
   await ElMessageBox.confirm(`确认删除服务端「${form.value.name}」？删除后无法恢复。`, '提示', { type: 'warning' })
-  await serverApi.remove(id)
-  ElMessage.success('已删除')
+  const result = await serverApi.remove(id)
+  if (result.cleanupQueued) ElMessage.warning('服务端已删除；Agent 离线，旧配置将在其上线后清理')
+  else ElMessage.success('已删除')
   draftMode.value = false
   const next = list.value.find((s) => s.id !== id)
   form.value = next ? { ...next } : emptyServer()
@@ -456,7 +464,7 @@ onMounted(load)
               <el-input v-model="form.name" placeholder="用于面板内区分" />
             </el-form-item>
             <el-form-item label="部署模式">
-              <el-radio-group v-model="form.deployMode">
+              <el-radio-group v-model="form.deployMode" :disabled="!!form.id && current?.deployMode === 'agent'">
                 <el-radio-button value="local">面板本机托管</el-radio-button>
                 <el-radio-button value="agent">远端 Agent 托管</el-radio-button>
               </el-radio-group>
@@ -467,15 +475,15 @@ onMounted(load)
               <span class="hint">面板重启后自动拉起；手动停止过的不再自动拉起</span>
             </el-form-item>
             <el-form-item v-if="form.deployMode === 'agent'" label="托管 Agent">
-              <el-select v-model="form.agentId" placeholder="选择具备 frps 角色的 Agent" style="width: 280px">
+              <el-select v-model="form.agentId" placeholder="选择空闲的服务端 Agent" style="width: 280px" :disabled="!!form.id && current?.deployMode === 'agent'">
                 <el-option
-                  v-for="a in agents"
+                  v-for="a in availableFrpsAgents"
                   :key="a.id"
                   :value="a.id"
-                  :label="`${a.name}（${a.online ? '在线' : '离线'}，roles=${a.roles}）`"
+                  :label="`${a.name}（${a.online ? '在线' : '离线'}）`"
                 />
               </el-select>
-              <span class="hint">Agent 离线时配置排队，上线后自动下发并校验</span>
+              <span class="hint">每个服务端 Agent 只绑定一个 frps；已创建的 Agent 绑定不能更换</span>
             </el-form-item>
             <el-form-item v-if="form.deployMode === 'agent'" label="公网地址 publicAddr">
               <el-input v-model="form.publicAddr" placeholder="如 1.2.3.4 或 frp.example.com" />

@@ -288,51 +288,41 @@ func binaryInstallCommand(panelURL string, agent *model.Agent, osName, roles, ru
 const agentDataHostDir = "/opt/dfpanel-agent"
 
 func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime, image string) string {
+	dataDir := agentDataHostDir + "/" + agent.NodeKey
 	lines := []string{
-		"docker run -d --name dfpanel-agent --restart unless-stopped \\",
+		fmt.Sprintf("docker run -d --name dfpanel-agent-%s --restart unless-stopped \\", agent.NodeKey),
 		fmt.Sprintf("  -e DFPANEL_URL=%s \\", panelURL),
 		fmt.Sprintf("  -e DFPANEL_NODE_KEY=%s \\", agent.NodeKey),
 		fmt.Sprintf("  -e DFPANEL_NODE_SECRET=%s \\", agent.Secret),
 		fmt.Sprintf("  -e DFPANEL_ROLES=%s \\", roles),
 		fmt.Sprintf("  -e DFPANEL_RUNTIME=%s \\", runtime),
+		"  -v /etc/machine-id:/host/etc/machine-id:ro \\",
+		"  -v " + dataDir + ":/var/lib/dfpanel-agent \\",
 	}
-	// 期望版本一并带过去：Agent 首次启动按它去面板取二进制，而不是自己挑 latest
 	if ver := frpVersionArg(agent); ver != "" {
 		lines = append(lines, fmt.Sprintf("  -e DFPANEL_FRPVERSION=%s \\", ver))
 	}
 	if runtime == "docker" {
-		lines = append(lines,
-			"  -v "+agentDataHostDir+":/var/lib/dfpanel-agent \\",
-			"  -v /var/run/docker.sock:/var/run/docker.sock \\")
-	} else {
-		lines = append(lines, "  -v dfpanel-agent-data:/var/lib/dfpanel-agent \\")
+		lines = append(lines, "  -v /var/run/docker.sock:/var/run/docker.sock \\")
 	}
-	lines = append(lines,
-		"  --network host \\",
-		"  "+image,
-	)
+	lines = append(lines, "  --network host \\", "  "+image)
 	return strings.Join(lines, "\n")
 }
 
 func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, image string) string {
-	volumes := "      - dfpanel-agent-data:/var/lib/dfpanel-agent\n"
-	tail := "\nvolumes:\n  dfpanel-agent-data:\n"
+	volumes := "      - " + agentDataHostDir + "/" + agent.NodeKey + ":/var/lib/dfpanel-agent\n" +
+		"      - /etc/machine-id:/host/etc/machine-id:ro\n"
 	if runtime == "docker" {
-		// 数据目录落在当前目录下（compose 的相对路径按 compose 文件所在目录解析）：
-		// 配置与 frp 二进制都存这里，容器重建后不用重新下发。
-		// frp 容器的文件由 docker cp 送入，不需要宿主路径，所以相对路径怎么写都行。
-		volumes = "      - ./dfpanel-agent-data:/var/lib/dfpanel-agent\n" +
-			"      - /var/run/docker.sock:/var/run/docker.sock\n"
-		tail = ""
+		volumes += "      - /var/run/docker.sock:/var/run/docker.sock\n"
 	}
 	versionLine := ""
 	if ver := frpVersionArg(agent); ver != "" {
 		versionLine = "      DFPANEL_FRPVERSION: " + ver + "\n"
 	}
 	return fmt.Sprintf(`services:
-  dfpanel-agent:
+  dfpanel-agent-%s:
     image: %s
-    container_name: dfpanel-agent
+    container_name: dfpanel-agent-%s
     restart: unless-stopped
     network_mode: host
     environment:
@@ -342,5 +332,5 @@ func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, i
       DFPANEL_ROLES: %s
       DFPANEL_RUNTIME: %s
 %s    volumes:
-%s%s`, image, panelURL, agent.NodeKey, agent.Secret, roles, runtime, versionLine, volumes, tail)
+%s`, agent.NodeKey, image, agent.NodeKey, panelURL, agent.NodeKey, agent.Secret, roles, runtime, versionLine, volumes)
 }

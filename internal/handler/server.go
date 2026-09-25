@@ -15,6 +15,7 @@ import (
 	"dfpanel/internal/agenthub"
 	"dfpanel/internal/database"
 	"dfpanel/internal/frp"
+	"dfpanel/internal/hostid"
 	"dfpanel/internal/model"
 	"dfpanel/internal/proto"
 )
@@ -36,6 +37,31 @@ func NewServerHandler(mgr *frp.Manager, hub *agenthub.Hub) *ServerHandler {
 // isAgentMode 判断是否由远端 Agent 托管
 func isAgentMode(s *model.FrpsServer) bool {
 	return s.DeployMode == "agent" && s.AgentID > 0
+}
+
+func requireServerAgent(s *model.FrpsServer, excludeServerID uint) error {
+	if s.DeployMode != "agent" {
+		s.AgentID = 0
+		return nil
+	}
+	if s.AgentID == 0 {
+		return fmt.Errorf("请选择服务端 Agent")
+	}
+	var agent model.Agent
+	if err := database.DB.First(&agent, s.AgentID).Error; err != nil {
+		return fmt.Errorf("所选的服务端 Agent 不存在")
+	}
+	if !agent.HasRole("frps") {
+		return fmt.Errorf("Agent「%s」不是服务端 Agent", agent.Name)
+	}
+	var count int64
+	if err := database.DB.Model(&model.FrpsServer{}).Where("deploy_mode = ? AND agent_id = ? AND id <> ?", "agent", s.AgentID, excludeServerID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("该服务端 Agent 已绑定一个 frps 服务端，请选择未绑定的 Agent")
+	}
+	return nil
 }
 
 // List GET /api/servers
@@ -83,6 +109,10 @@ func (h *ServerHandler) Create(c *gin.Context) {
 	if s.DeployMode == "" {
 		s.DeployMode = "local"
 	}
+	if err := requireServerAgent(&s, 0); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	// 同一台机器上端口不能重复，否则后启动的 frps 会因地址占用而失败
 	if err := checkPortConflict(&s, 0); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -115,6 +145,14 @@ func (h *ServerHandler) Update(c *gin.Context) {
 	if req.DeployMode == "" {
 		req.DeployMode = old.DeployMode
 	}
+	if old.DeployMode == "agent" && old.AgentID != 0 && (req.DeployMode != "agent" || req.AgentID != old.AgentID) {
+		c.JSON(http.StatusConflict, gin.H{"error": "已创建服务端不能更换 Agent 或部署模式；请停止并删除旧服务端后重新创建"})
+		return
+	}
+	if err := requireServerAgent(&req, old.ID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	req.Status = old.Status
 	req.ManualStopped = old.ManualStopped
 
@@ -137,12 +175,34 @@ func (h *ServerHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
 		return
 	}
-	_ = h.mgr.Stop(uint(id))
-	if err := database.DB.Delete(&model.FrpsServer{}, id).Error; err != nil {
+	var s model.FrpsServer
+	if err := database.DB.First(&s, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "服务端不存在"})
+		return
+	}
+	queued := false
+	if isAgentMode(&s) {
+		res, err := dispatch(h.hub, &model.AgentCommand{
+			AgentID: s.AgentID, Type: proto.CmdUnassign, TargetType: proto.TargetServer, TargetID: s.ID,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !res.OK && !res.Queued {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": res.Message})
+			return
+		}
+		queued = res.Queued
+	} else if err := h.mgr.Stop(s.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "停止 frps 失败：" + err.Error()})
+		return
+	}
+	if err := database.DB.Delete(&s).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
+	c.JSON(http.StatusOK, gin.H{"message": "已删除", "cleanupQueued": queued})
 }
 
 // Preview GET /api/servers/:id/config 预览生成的 frps.json
@@ -175,6 +235,10 @@ func (h *ServerHandler) Apply(c *gin.Context) {
 	var s model.FrpsServer
 	if err := database.DB.First(&s, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "服务端不存在"})
+		return
+	}
+	if err := checkPortConflict(&s, s.ID); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -269,6 +333,12 @@ func (h *ServerHandler) lifecycle(c *gin.Context, cmdType string) {
 	if err := database.DB.First(&s, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "服务端不存在"})
 		return
+	}
+	if cmdType != proto.CmdStop {
+		if err := checkPortConflict(&s, s.ID); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	if isAgentMode(&s) {
@@ -560,16 +630,20 @@ func hostKey(s *model.FrpsServer) string {
 		if s.AgentID == 0 {
 			return "agent:unassigned"
 		}
+		var agent model.Agent
+		if err := database.DB.Select("host_id").First(&agent, s.AgentID).Error; err == nil && agent.HostID != "" {
+			return "host:" + agent.HostID
+		}
 		return "agent:" + strconv.FormatUint(uint64(s.AgentID), 10)
 	}
-	return "local"
+	return "host:" + hostid.Current()
 }
 
 // checkPortConflict 校验监听端口与 Dashboard 端口是否与同机上的其它服务端冲突
 func checkPortConflict(s *model.FrpsServer, excludeID uint) error {
 	var list []model.FrpsServer
 	if err := database.DB.Find(&list).Error; err != nil {
-		return nil
+		return err
 	}
 
 	self := hostKey(s)

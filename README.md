@@ -20,7 +20,7 @@
 ## 主要功能
 
 - **服务端与客户端管理**：创建多个 frps 服务端和 frpc 节点，配置 TCP、UDP、HTTP、HTTPS、STCP、SUDP、XTCP 等隧道。
-- **分离部署**：一个 Agent 可同时托管多个 frps 和 frpc；支持直接运行进程或通过 Docker 运行实例。
+- **分离部署**：服务端 Agent 与客户端 Agent 各自只托管一个 frps 服务端或 frpc 节点；支持进程和 Docker 运行时，同机可安装多个独立 Agent。
 - **配置下发与恢复**：面板保存配置版本，支持查看和回滚。Agent 启动时可从面板恢复缺失的、最近成功应用的配置，不覆盖已有的非空本地配置。
 - **自动启动**：面板和 Agent 重启后按自动启动开关恢复实例；被手动停止的实例不会自动拉起。
 - **frp 版本管理**：面板准备并分发 frp 二进制；同一 Agent 上的 frps 与 frpc 共用该 Agent 的 frp 版本。
@@ -89,15 +89,15 @@ Windows 脚本会检查二进制是否支持 Windows 服务。若当前 Release 
    ```
 
 3. 打开 `http://<面板地址>:7226`，按初始化页面创建管理员账号。
-4. 在「Agent 管理」新建 Agent，选择 `frps`、`frpc` 或两种角色，再复制页面生成的 Docker 安装命令到目标机器执行。
+4. 在「Agent 管理」按服务端或客户端分别新建 Agent，每个 Agent 绑定一个服务端或节点，再复制页面生成的安装命令到目标机器执行。
 
-也可以修改 [docker-compose.agent.yml](docker-compose.agent.yml) 中的面板地址、安装令牌和角色，再启动 Agent：
+也可以修改 [docker-compose.agent.yml](docker-compose.agent.yml) 中的面板地址，在 `.env` 中设置 `DFPANEL_NODE_KEY`、`DFPANEL_NODE_SECRET` 和 `DFPANEL_ROLES` 后启动 Agent：
 
 ```bash
 docker compose -f docker-compose.agent.yml up -d
 ```
 
-Compose 示例默认使用 Linux host 网络。使用端口映射时，请按实际 frps 监听端口、Dashboard 端口及隧道端口调整映射。Agent 的 `DFPANEL_RUNTIME` 默认为 `process`；选择 `docker` 时还需挂载 Docker socket，示例见 [Agent 部署文档](docs/agent-架构与部署.md)。请保留面板和 Agent 的数据卷，容器重建后才能继续使用原有数据。
+Compose 示例默认使用 Linux host 网络。同机运行多个 Agent 时，为每个 Agent 使用独立的 nodeKey、数据目录和 Compose 项目名。使用端口映射时，请按实际 frps 监听端口、Dashboard 端口及隧道端口调整映射。Agent 的 `DFPANEL_RUNTIME` 默认为 `process`；选择 `docker` 时还需挂载 Docker socket，示例见 [Agent 部署文档](docs/agent-架构与部署.md)。请保留面板和 Agent 的数据目录；其中的 `instance-id` 用于防止同一 Agent 身份在多处重复安装。
 
 ### 二进制
 
@@ -145,7 +145,9 @@ Windows 使用 `.\build.ps1 -AgentBundle`。直接运行面板二进制而不使
 | `-public-url` | `DFPANEL_PUBLIC_URL` | 按请求推断 | Agent 能访问的面板地址 |
 | `-agent-image` | `DFPANEL_AGENT_IMAGE` | `dreamstation625/dfpanel-agent:latest` | 面板生成 Docker 安装命令时使用的镜像 |
 
-Agent 常用环境变量为 `DFPANEL_URL`、`DFPANEL_NODE_KEY`、`DFPANEL_NODE_SECRET`、`DFPANEL_ROLES`、`DFPANEL_RUNTIME` 和 `DFPANEL_DATA_DIR`。角色可设为 `frps`、`frpc` 或 `frps,frpc`。完整参数和部署示例见 [Agent 部署文档](docs/agent-架构与部署.md)。
+Agent 常用环境变量为 `DFPANEL_URL`、`DFPANEL_NODE_KEY`、`DFPANEL_NODE_SECRET`、`DFPANEL_ROLES`、`DFPANEL_RUNTIME` 和 `DFPANEL_DATA_DIR`。角色只能设为 `frps` 或 `frpc`。完整参数和部署示例见 [Agent 部署文档](docs/agent-架构与部署.md)。
+
+此前预发布版本若已将一个 Agent 绑定多个对象，本次单绑定数据库索引不会自动改写这些记录。升级前请备份面板数据；不需要旧数据时，使用全新数据目录初始化面板，再为每个服务端或节点分别创建并安装 Agent。
 
 ## 卸载
 
@@ -153,8 +155,8 @@ Agent 常用环境变量为 `DFPANEL_URL`、`DFPANEL_NODE_KEY`、`DFPANEL_NODE_S
 | --- | --- | --- |
 | Docker Compose 面板 | `docker compose down` | `./data` 目录保留 |
 | Linux 部署脚本的 Docker 面板 | `docker compose -f /opt/dfpanel/compose.yml down` | `/var/lib/dfpanel` 保留 |
-| Docker Compose Agent | `docker compose -f docker-compose.agent.yml down` | 默认保留命名卷中的 Agent 数据 |
-| `docker run` | `docker rm -f dfpanel` 或 `docker rm -f dfpanel-agent` | 挂载的数据目录或卷保留 |
+| Docker Compose Agent | 在对应 Compose 项目目录执行 `docker compose -f docker-compose.agent.yml down` | `/opt/dfpanel-agent/<nodeKey>` 保留 |
+| `docker run` | 面板执行 `docker rm -f dfpanel`；Agent 执行 `docker rm -f dfpanel-agent-<nodeKey>` | 挂载的数据目录保留 |
 | 二进制面板 | 停止面板进程并删除面板程序 | `-data` 指定的目录保留，需自行决定是否删除 |
 | Linux 部署脚本的二进制面板 | `sudo systemctl disable --now dfpanel`，删除 `/etc/systemd/system/dfpanel.service` 和 `/usr/local/bin/dfpanel`，再执行 `sudo systemctl daemon-reload` | `/var/lib/dfpanel` 保留 |
 | Windows 部署脚本的二进制面板 | 管理员 PowerShell 执行 `Stop-Service DFPanel`、`sc.exe delete DFPanel`，服务退出后执行 `Remove-Item (Join-Path $env:ProgramData 'DFPanel\dfpanel.exe')` | `%ProgramData%\DFPanel\data` 保留 |
@@ -164,16 +166,16 @@ Linux / macOS：
 
 ```bash
 curl -fsSL http://<面板地址>:7226/install.sh -o install.sh
-sudo bash install.sh --uninstall
-# 确定不再需要 Agent 数据时：sudo bash install.sh --uninstall --purge
+sudo bash install.sh --uninstall --instance <安装时的 nodeKey>
+# 确定不再需要该 Agent 数据时：sudo bash install.sh --uninstall --instance <安装时的 nodeKey> --purge
 ```
 
 Windows（管理员 PowerShell）：
 
 ```powershell
 Invoke-WebRequest -Uri 'http://<面板地址>:7226/install.ps1' -OutFile .\install.ps1
-.\install.ps1 -Uninstall
-# 确定不再需要 Agent 数据时：.\install.ps1 -Uninstall -Purge
+.\install.ps1 -Uninstall -Instance <安装时的 nodeKey>
+# 确定不再需要该 Agent 数据时：.\install.ps1 -Uninstall -Instance <安装时的 nodeKey> -Purge
 ```
 
 Agent 卸载脚本会停止其托管的 frp 实例并注销系统服务或计划任务。卸载后，可在面板的「Agent 管理」中删除对应记录。

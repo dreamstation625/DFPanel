@@ -63,3 +63,67 @@ func TestUpdateAgentKeepsFrpState(t *testing.T) {
 		t.Fatalf("编辑 Agent 清掉了版本或运行状态：%+v", saved)
 	}
 }
+
+func TestAgentTypesAndOneToOneBindings(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "binding.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Agent{}, &model.Node{}, &model.FrpsServer{}); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, _ := db.DB()
+	previousDB := database.DB
+	database.DB = db
+	t.Cleanup(func() { database.DB = previousDB; _ = sqlDB.Close() })
+
+	client := model.Agent{Name: "客户端", NodeKey: "client-key", Secret: "secret", Roles: "frpc"}
+	server := model.Agent{Name: "服务端", NodeKey: "server-key", Secret: "secret", Roles: "frps", HostID: "shared-host"}
+	for _, agent := range []*model.Agent{&client, &server} {
+		if err := db.Create(agent).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := requireManagedAgent(client.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireManagedAgent(server.ID, 0); err == nil {
+		t.Fatal("服务端 Agent 不应绑定客户端节点")
+	}
+	if err := requireServerAgent(&model.FrpsServer{DeployMode: "agent", AgentID: server.ID}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireServerAgent(&model.FrpsServer{DeployMode: "agent", AgentID: client.ID}, 0); err == nil {
+		t.Fatal("客户端 Agent 不应绑定服务端")
+	}
+	node := model.Node{Name: "节点", NodeKey: "node-key", AgentID: client.ID}
+	if err := db.Create(&node).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := requireManagedAgent(client.ID, 0); err == nil {
+		t.Fatal("客户端 Agent 不应重复绑定")
+	}
+	if err := requireManagedAgent(client.ID, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.Node{Name: "重复节点", NodeKey: "other-key", AgentID: client.ID}).Error; err == nil {
+		t.Fatal("数据库必须阻止并发重复绑定客户端 Agent")
+	}
+	frps := model.FrpsServer{Name: "服务端", DeployMode: "agent", AgentID: server.ID, BindPort: 7000}
+	if err := db.Create(&frps).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := requireServerAgent(&model.FrpsServer{DeployMode: "agent", AgentID: server.ID}, 0); err == nil {
+		t.Fatal("服务端 Agent 不应重复绑定")
+	}
+	if err := db.Create(&model.FrpsServer{Name: "重复服务端", DeployMode: "agent", AgentID: server.ID}).Error; err == nil {
+		t.Fatal("数据库必须阻止并发重复绑定服务端 Agent")
+	}
+	secondServerAgent := model.Agent{Name: "同机另一个服务端 Agent", NodeKey: "server-2-key", Secret: "secret", Roles: "frps", HostID: "shared-host"}
+	if err := db.Create(&secondServerAgent).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPortConflict(&model.FrpsServer{DeployMode: "agent", AgentID: secondServerAgent.ID, BindPort: 7000}, 0); err == nil {
+		t.Fatal("同机不同 Agent 不得使用相同监听端口")
+	}
+}

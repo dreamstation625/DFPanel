@@ -53,6 +53,11 @@ func (a *Agent) updateState(key string, fn func(*instanceState)) error {
 	st := states[key]
 	fn(&st)
 	states[key] = st
+	return a.saveStates(states)
+}
+
+// saveStates 在 stateMu 持有期间写入状态文件。
+func (a *Agent) saveStates(states map[string]instanceState) error {
 	b, err := json.MarshalIndent(states, "", "  ")
 	if err != nil {
 		return err

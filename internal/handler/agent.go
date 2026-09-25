@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 	"dfpanel/internal/model"
 	"dfpanel/internal/proto"
 )
+
+var instanceIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 // AgentHandler Agent 面接口：注册、心跳、指令拉取、结果上报与 WebSocket 长连接
 type AgentHandler struct {
@@ -58,6 +61,53 @@ func (h *AgentHandler) agentAuth(c *gin.Context) (*model.Agent, bool) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return nil, false
 	}
+	if c.Query("role") != agent.Roles {
+		c.JSON(http.StatusConflict, gin.H{"error": "安装命令中的 Agent 类型与面板记录不一致"})
+		return nil, false
+	}
+	instanceID := firstNonEmpty(c.Query("instanceId"), c.GetHeader("X-Agent-Instance"))
+	if !instanceIDPattern.MatchString(instanceID) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "缺少有效的 Agent 安装实例标识，请更新 Agent"})
+		return nil, false
+	}
+	hostID := firstNonEmpty(c.Query("hostId"), c.GetHeader("X-Agent-Host"))
+	if !instanceIDPattern.MatchString(hostID) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "缺少有效的 Agent 宿主标识，请更新 Agent"})
+		return nil, false
+	}
+	if agent.InstanceID != "" && agent.InstanceID != instanceID {
+		c.JSON(http.StatusConflict, gin.H{"error": "该 Agent 身份已被另一安装实例使用；请为这台客户端创建独立 Agent"})
+		return nil, false
+	}
+	if agent.HostID != "" && agent.HostID != hostID {
+		c.JSON(http.StatusConflict, gin.H{"error": "该 Agent 身份已绑定另一台宿主机；请创建独立 Agent"})
+		return nil, false
+	}
+	if agent.InstanceID == "" || agent.HostID == "" {
+		var existing int64
+		if err := database.DB.Model(&model.Agent{}).Where("instance_id = ? AND id <> ?", instanceID, agent.ID).Count(&existing).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "检查安装实例失败"})
+			return nil, false
+		}
+		if existing > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "该安装实例已绑定另一 Agent，请为本机新建独立安装目录"})
+			return nil, false
+		}
+		if err := database.DB.Model(&model.Agent{}).
+			Where("id = ? AND instance_id = ? AND host_id = ?", agent.ID, agent.InstanceID, agent.HostID).
+			Updates(map[string]any{"instance_id": instanceID, "host_id": hostID}).Error; err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "绑定安装实例失败；该实例可能已被另一 Agent 使用"})
+			return nil, false
+		}
+		if err := database.DB.Select("instance_id", "host_id").First(&agent, agent.ID).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取安装实例失败"})
+			return nil, false
+		}
+	}
+	if agent.InstanceID != instanceID || agent.HostID != hostID {
+		c.JSON(http.StatusConflict, gin.H{"error": "该 Agent 身份已绑定其它安装实例或宿主机"})
+		return nil, false
+	}
 	return &agent, true
 }
 
@@ -75,8 +125,13 @@ func (h *AgentHandler) Register(c *gin.Context) {
 		Arch     string `json:"arch"`
 		Roles    string `json:"roles"`
 		Runtime  string `json:"runtime"`
+		HostID   string `json:"hostId"`
 	}
 	_ = c.ShouldBindJSON(&req)
+	if req.Roles != "" && req.Roles != agent.Roles {
+		c.JSON(http.StatusConflict, gin.H{"error": "安装命令中的 Agent 类型与面板记录不一致"})
+		return
+	}
 
 	updates := map[string]any{
 		"status":      "online",
@@ -96,8 +151,9 @@ func (h *AgentHandler) Register(c *gin.Context) {
 	if req.Arch != "" {
 		updates["arch"] = req.Arch
 	}
-	if req.Roles != "" {
-		updates["roles"] = req.Roles
+	if req.HostID != "" && req.HostID != agent.HostID {
+		c.JSON(http.StatusConflict, gin.H{"error": "上报的宿主标识与安装实例不一致"})
+		return
 	}
 	if req.Runtime != "" {
 		updates["runtime"] = req.Runtime
@@ -107,9 +163,6 @@ func (h *AgentHandler) Register(c *gin.Context) {
 		return
 	}
 
-	if req.Roles != "" {
-		agent.Roles = req.Roles
-	}
 	c.JSON(http.StatusOK, gin.H{
 		"agentId":           agent.ID,
 		"name":              agent.Name,
@@ -197,7 +250,10 @@ func (h *AgentHandler) Commands(c *gin.Context) {
 	}
 
 	var list []model.AgentCommand
-	if err := database.DB.Where("agent_id = ? AND status = ?", agent.ID, "pending").
+	// 清理指令可重复执行；若 Agent 在领取后崩溃，超时后重新投递，避免旧实例永久残留。
+	staleCleanupBefore := time.Now().Add(-2 * time.Minute)
+	if err := database.DB.Where("agent_id = ? AND (status = ? OR (type = ? AND status = ? AND sent_at < ?))",
+		agent.ID, "pending", proto.CmdUnassign, "sent", staleCleanupBefore).
 		Order("id asc").Limit(20).Find(&list).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询指令失败"})
 		return

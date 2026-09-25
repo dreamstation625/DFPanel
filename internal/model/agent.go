@@ -1,15 +1,12 @@
 package model
 
-import (
-	"strings"
-	"time"
-)
+import "time"
 
 // AgentFRPCachedVersionsColumn 固定现有数据库列名，避免改名时丢失已缓存版本记录。
 // GORM 将 FRPCachedVersions 默认映射为 f_rpcached_versions。
 const AgentFRPCachedVersionsColumn = "f_rpcached_versions"
 
-// Agent 部署在远端机器上的守护程序（单一二进制，可同时托管 frps 与 frpc）
+// Agent 部署在远端机器上的守护程序（单一角色、单一托管对象）
 type Agent struct {
 	ID     uint   `gorm:"primaryKey" json:"id"`
 	Name   string `gorm:"size:64;not null" json:"name"`
@@ -19,13 +16,15 @@ type Agent struct {
 	NodeKey string `gorm:"uniqueIndex;size:64;not null" json:"nodeKey"`
 	Secret  string `gorm:"size:128;not null" json:"secret"`
 
-	// Roles 该 Agent 允许承载的角色，逗号分隔：frps / frpc，可同时具备
-	Roles string `gorm:"size:64;default:frpc" json:"roles"`
+	// Roles 只能是 frps 或 frpc；一条 Agent 记录只代表一个安装实例。
+	Roles      string `gorm:"size:64;default:frpc" json:"roles"`
+	InstanceID string `gorm:"size:64;uniqueIndex:idx_agent_instance,where:instance_id <> ''" json:"-"`
+	HostID     string `gorm:"size:128;index" json:"hostId"`
 	// Runtime 运行时：process（直起子进程）/ docker（起容器）；由 Agent 上报
 	Runtime string `gorm:"size:16" json:"runtime"`
 
 	// 以下三个字段是 frp（frps/frpc）的版本信息，与该 Agent 自身的 Version 不是一回事。
-	// 版本粒度按 Agent 统一：该 Agent 上的 frps 与 frpc 共用一个 frp 版本。
+	// 版本粒度按 Agent 记录独立管理。
 	// FRPVersion 为空表示不管理，此时沿用机器上现有的二进制，仅提示可更新。
 	FRPVersion          string `gorm:"size:32" json:"frpVersion"`
 	FRPInstalledVersion string `gorm:"size:32" json:"frpInstalledVersion"`                           // active 槽位实际版本（心跳上报）
@@ -49,12 +48,7 @@ type Agent struct {
 
 // HasRole 判断是否具备某个角色（frps / frpc）
 func (a *Agent) HasRole(role string) bool {
-	for _, r := range strings.Split(a.Roles, ",") {
-		if strings.TrimSpace(r) == strings.TrimSpace(role) {
-			return true
-		}
-	}
-	return false
+	return a.Roles == role
 }
 
 // ConfigVersion 每次下发配置的留痕，是 Agent 回滚与面板「一键回退」的依据
@@ -74,7 +68,7 @@ type ConfigVersion struct {
 type AgentCommand struct {
 	ID         uint   `gorm:"primaryKey" json:"id"`
 	AgentID    uint   `gorm:"index" json:"agentId"`
-	Type       string `gorm:"size:32" json:"type"` // apply / start / stop / restart / log / rollback
+	Type       string `gorm:"size:32" json:"type"` // apply / start / stop / restart / unassign / log / rollback
 	TargetType string `gorm:"size:16" json:"targetType"`
 	TargetID   uint   `json:"targetId"`
 	Payload    string `gorm:"type:text" json:"payload"` // apply / rollback 时为配置全文
