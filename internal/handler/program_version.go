@@ -60,7 +60,7 @@ func publishedFor(current string, latest versioncheck.Latest) versioncheck.Publi
 // ProgramVersionCheck 比较运行中的面板和每个 Agent 与最新发布版本，不触发升级。
 func ProgramVersionCheck(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		latest, fetchErr := versioncheck.Default.Check(c.Request.Context(), c.Query("refresh") == "true")
+		latest, fetchErr, checking := versioncheck.Default.Snapshot(c.Query("refresh") == "true")
 		panelError := ""
 		if fetchErr != nil {
 			panelError = fetchErr.Error()
@@ -89,6 +89,6 @@ func ProgramVersionCheck(cfg *config.Config) gin.HandlerFunc {
 				Status: compareProgramVersion(agent.Version, published.AgentVersion, published.AgentReleaseURL, agentError),
 			})
 		}
-		c.JSON(http.StatusOK, gin.H{"panel": panel, "agents": agentStatuses, "checkedAt": latest.CheckedAt})
+		c.JSON(http.StatusOK, gin.H{"panel": panel, "agents": agentStatuses, "checkedAt": latest.CheckedAt, "checking": checking})
 	}
 }

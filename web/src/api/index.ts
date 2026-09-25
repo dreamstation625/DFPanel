@@ -483,6 +483,7 @@ export interface ProgramVersionCheckResult {
   panel: ProgramVersionStatus
   agents: { id: number; status: ProgramVersionStatus }[]
   checkedAt: string
+  checking: boolean
 }
 
 export const programVersionApi = {

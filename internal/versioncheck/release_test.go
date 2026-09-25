@@ -5,9 +5,66 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func TestSnapshotReturnsWhileReleaseRequestIsSlow(t *testing.T) {
+	releaseGate := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseGate) }) }
+	var releaseRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/releases" {
+			releaseRequests.Add(1)
+			<-releaseGate
+			_, _ = w.Write([]byte(`[{"tag_name":"v0.0.1-beta.19"}]`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	defer release()
+	client := &Client{httpClient: server.Client(), apiURL: server.URL + "/releases", rawURL: server.URL + "/raw"}
+
+	returned := make(chan bool, 1)
+	go func() {
+		_, _, checking := client.Snapshot(false)
+		returned <- checking
+	}()
+	select {
+	case checking := <-returned:
+		if !checking {
+			t.Fatal("首次查询应提示仍在检测")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("版本查询被 GitHub 请求阻塞")
+	}
+	if _, _, checking := client.Snapshot(false); !checking {
+		t.Fatal("重复查询应复用正在运行的请求")
+	}
+	if got := releaseRequests.Load(); got > 1 {
+		t.Fatalf("重复发起了 %d 次 GitHub 请求", got)
+	}
+	release()
+	deadline := time.After(3 * time.Second)
+	for {
+		latest, err, checking := client.Snapshot(false)
+		if !checking {
+			if err != nil || latest.Any.PanelVersion != "0.0.1-beta.19" {
+				t.Fatalf("后台查询完成后没有读到版本：%+v，错误=%v", latest, err)
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("后台版本查询未完成")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
 
 func TestReleaseCheckUsesIndependentAgentVersionAndCache(t *testing.T) {
 	var releaseRequests atomic.Int32

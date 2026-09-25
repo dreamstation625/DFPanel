@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   agentApi,
@@ -19,16 +19,22 @@ const agents = ref<AgentInfo[]>([])
 const versionStatuses = ref<Record<number, ProgramVersionStatus>>({})
 const versionChecking = ref(false)
 const versionCheckError = ref('')
+let versionPoll: ReturnType<typeof setTimeout> | undefined
+let mounted = false
 
 async function checkAgentVersions(refresh = false) {
+  if (versionPoll) clearTimeout(versionPoll)
   versionChecking.value = true
   try {
     const result = await programVersionApi.check(refresh)
+    if (!mounted) return
     versionStatuses.value = Object.fromEntries(result.agents.map((item) => [item.id, item.status]))
     versionCheckError.value = result.agents.find((item) => item.status.error)?.status.error || ''
+    versionChecking.value = result.checking
+    if (result.checking) versionPoll = setTimeout(() => void checkAgentVersions(), 2000)
   } catch {
+    if (!mounted) return
     versionCheckError.value = '无法连接面板版本检测接口'
-  } finally {
     versionChecking.value = false
   }
 }
@@ -270,7 +276,14 @@ async function remove(a: AgentInfo) {
   await load()
 }
 
-onMounted(load)
+onMounted(() => {
+  mounted = true
+  void load()
+})
+onUnmounted(() => {
+  mounted = false
+  if (versionPoll) clearTimeout(versionPoll)
+})
 </script>
 
 <template>
@@ -324,6 +337,7 @@ onMounted(load)
             </el-tooltip>
             <div v-else-if="versionStatuses[row.id]?.state === 'current'" class="sub">已是最新</div>
             <div v-else-if="versionStatuses[row.id]?.state === 'ahead'" class="sub">高于发布版</div>
+            <div v-else-if="versionChecking && versionStatuses[row.id]?.state === 'unknown'" class="sub">正在检测…</div>
             <div v-else-if="versionStatuses[row.id]?.state === 'unknown'" class="sub">版本未知</div>
           </template>
         </el-table-column>

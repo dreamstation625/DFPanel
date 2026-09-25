@@ -42,6 +42,7 @@ type Client struct {
 	cached     Latest
 	cachedErr  error
 	cachedAt   time.Time
+	fetching   bool
 }
 
 func NewClient() *Client {
@@ -49,6 +50,33 @@ func NewClient() *Client {
 }
 
 var Default = NewClient()
+
+// Snapshot 立即返回缓存，并在需要时启动一次后台查询。页面无需等待 GitHub 请求完成。
+// 查询与 HTTP 请求生命周期分离，避免页面切换取消请求后把取消错误缓存给其他用户。
+func (client *Client) Snapshot(refresh bool) (Latest, error, bool) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.fetching {
+		return client.cached, client.cachedErr, true
+	}
+	if !client.cachedAt.IsZero() &&
+		(time.Since(client.cachedAt) < 30*time.Second || (!refresh && time.Since(client.cachedAt) < 10*time.Minute)) {
+		return client.cached, client.cachedErr, false
+	}
+	client.fetching = true
+	go func() {
+		result, err := client.fetch(context.Background())
+		client.mu.Lock()
+		if err == nil || client.cached.CheckedAt.IsZero() {
+			client.cached = result
+		}
+		client.cachedErr = err
+		client.cachedAt = time.Now()
+		client.fetching = false
+		client.mu.Unlock()
+	}()
+	return client.cached, client.cachedErr, true
+}
 
 // Check 查询包含预发布版的 Release 列表，并缓存 10 分钟；手动刷新最短间隔 30 秒。
 func (client *Client) Check(ctx context.Context, refresh bool) (Latest, error) {

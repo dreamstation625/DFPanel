@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { authApi, programVersionApi, type ProgramVersionStatus } from '@/api'
@@ -15,6 +15,8 @@ const username = computed(() => localStorage.getItem('dfpanel_user') || 'admin')
 const panelVersion = ref('')
 const versionCheck = ref<ProgramVersionStatus | null>(null)
 const checkingVersion = ref(false)
+let versionPoll: ReturnType<typeof setTimeout> | undefined
+let mounted = false
 const versionLabel = computed(() => {
   const v = panelVersion.value
   if (!v) return ''
@@ -33,21 +35,30 @@ async function loadPanelVersion() {
 }
 
 async function checkVersion(refresh = false) {
+  if (versionPoll) clearTimeout(versionPoll)
   checkingVersion.value = true
   try {
     const result = await programVersionApi.check(refresh)
+    if (!mounted) return
     versionCheck.value = result.panel
     if (!panelVersion.value) panelVersion.value = result.panel.current
+    checkingVersion.value = result.checking
+    if (result.checking) versionPoll = setTimeout(() => void checkVersion(), 2000)
   } catch {
+    if (!mounted) return
     versionCheck.value = { current: panelVersion.value, latest: '', state: 'error', updateAvailable: false, error: '无法连接面板版本检测接口' }
-  } finally {
     checkingVersion.value = false
   }
 }
 
 onMounted(() => {
+  mounted = true
   void loadPanelVersion()
   void checkVersion()
+})
+onUnmounted(() => {
+  mounted = false
+  if (versionPoll) clearTimeout(versionPoll)
 })
 
 function onSelect(index: string) {
@@ -111,6 +122,7 @@ async function onCommand(cmd: string) {
         <div v-if="versionCheck?.updateAvailable" class="update-notice">
           <a :href="versionCheck.releaseUrl" target="_blank" rel="noopener noreferrer">新版 {{ versionCheck.latest }}</a>
         </div>
+        <div v-else-if="checkingVersion" class="check-current">正在检测…</div>
         <el-tooltip v-else-if="versionCheck?.state === 'error'" :content="versionCheck.error || '检测失败'">
           <div class="check-error">版本检测失败</div>
         </el-tooltip>
