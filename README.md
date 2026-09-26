@@ -117,6 +117,13 @@ sudo bash deploy-panel.sh --mode binary --public-url http://192.168.1.10:7226
 sudo bash deploy-panel.sh --mode binary --public-url http://192.168.1.10:7226 --binary ./output/dfpanel-linux-amd64
 ```
 
+不克隆仓库时，可以直接下载 [deploy-panel.sh 原始脚本](https://raw.githubusercontent.com/dreamstation625/DFPanel/refs/heads/main/deploy-panel.sh)：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dreamstation625/DFPanel/refs/heads/main/deploy-panel.sh -o deploy-panel.sh
+sudo bash deploy-panel.sh --mode binary --public-url http://192.168.1.10:7226
+```
+
 Windows 使用 [deploy-panel.ps1](deploy-panel.ps1)。二进制部署会注册开机启动的 **DFPanel Windows 服务**；选择 Docker 时，脚本仅显示手动部署步骤：
 
 ```powershell
@@ -126,7 +133,21 @@ Windows 使用 [deploy-panel.ps1](deploy-panel.ps1)。二进制部署会注册�
 .\deploy-panel.ps1 -Mode Docker
 ```
 
-二进制模式默认下载同目录 `VERSION` 对应的 GitHub Release（包括 Pre-release）中的面板程序及 Agent 全平台包，并校验 SHA256。Release 不存在时，可使用本地 `output/`，有 Go 源码时部署脚本也能构建 Agent 全平台包；亦可通过 `--agent-bundle` / `-AgentBundle` 指定本地包。可通过 `--version` / `-Version` 指定面板版本。Linux 的数据目录为 `/var/lib/dfpanel`，Windows 为 `%ProgramData%\DFPanel\data`；重复部署不会删除数据。Windows 服务日志写入数据目录的 `panel.log`。
+不指定版本时，Docker 模式使用 `dreamstation625/dfpanel:latest`；二进制模式查询 GitHub 最新正式版，下载并校验同一 Release 的面板程序和 Agent 全平台包。需要安装指定版本（包括预发布版）时，使用 `--version` / `-Version`；指定本地面板二进制时，脚本从程序读取版本并准备对应的 Agent 包。Release 不可用时，脚本可使用版本相符的本地 `output/` 文件；也可通过 `--agent-bundle` / `-AgentBundle` 指定本地包。
+
+GitHub 访问较慢时，二进制部署可传入完整 URL 前缀代理。例如 `https://mirror.example/` 会将 `https://github.com/...` 变为 `https://mirror.example/https://github.com/...`：
+
+```bash
+sudo bash deploy-panel.sh --mode binary --public-url http://192.168.1.10:7226 --github-proxy https://mirror.example/
+```
+
+```powershell
+.\deploy-panel.ps1 -Mode Binary -PublicUrl http://192.168.1.10:7226 -GitHubProxy https://mirror.example/
+```
+
+`--github-proxy` / `-GitHubProxy` 只作用于脚本中的 GitHub 版本查询和 Release 文件下载，不影响 Docker Hub 拉取镜像，也不影响获取部署脚本本身。有些加速源不支持 GitHub API；脚本遇到查询失败会尝试直连 API。直连也不可用时，可加 `--version` / `-Version` 指定已发布的版本号（例如 `0.0.2`），跳过版本查询，Release 文件仍通过加速源下载。若下载上面的 raw 脚本也需要加速，可将同一前缀放在 raw URL 前：`https://mirror.example/https://raw.githubusercontent.com/dreamstation625/DFPanel/refs/heads/main/deploy-panel.sh`。
+
+部署方式在交互运行时选择；非交互运行须指定 `--mode` / `-Mode`。`--public-url` / `-PublicUrl` 必须是 Agent 可访问的地址，脚本不会猜测；监听端口默认 `:7226`。Linux 的数据目录为 `/var/lib/dfpanel`，Windows 为 `%ProgramData%\DFPanel\data`；重复部署不会删除数据。Windows 服务日志写入数据目录的 `panel.log`。
 
 Windows 脚本会检查二进制是否支持 Windows 服务。若当前 Release 是旧版本，请先用 `build.ps1` 构建当前源码，再用 `-BinaryPath` 指定生成的程序。
 

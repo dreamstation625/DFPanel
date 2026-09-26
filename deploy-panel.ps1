@@ -14,7 +14,8 @@ param(
     [string]$Listen = ":7226",
     [string]$BinaryPath,
     [string]$AgentBundle,
-    [string]$Version
+    [string]$Version,
+    [string]$GitHubProxy
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,6 +40,9 @@ if ($Mode -notin @("Docker", "Binary")) {
 
 if ($Mode -eq "Docker") {
     Write-Host "Windows 下请手动部署 Docker 版本。" -ForegroundColor Yellow
+    if ($GitHubProxy) {
+        Write-Host "-GitHubProxy 不影响 Docker Hub 镜像下载。" -ForegroundColor Yellow
+    }
     Write-Host "操作方法：修改 docker-compose.yml，注释 network_mode: host，启用所需 ports，"
     Write-Host "设置 DFPANEL_PUBLIC_URL 后运行 docker compose up -d。"
     Write-Host "面板端口默认为 7226；frps 和隧道端口也需按实际配置映射。"
@@ -72,11 +76,18 @@ $PublicUrl = $PublicUrl.TrimEnd("/")
 if ($Listen -notmatch '^:[0-9]{1,5}$') {
     throw "-Listen 应为 :端口，例如 :7226"
 }
-if (-not $Version -and (Test-Path -LiteralPath (Join-Path $repoRoot "VERSION"))) {
-    $Version = (Get-Content -LiteralPath (Join-Path $repoRoot "VERSION") -Raw -Encoding UTF8).Trim()
-}
 if ($Version -and $Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
     throw "版本号格式不合法：$Version"
+}
+if ($GitHubProxy) {
+    $proxyUri = $null
+    if (-not [Uri]::TryCreate($GitHubProxy, [UriKind]::Absolute, [ref]$proxyUri) -or
+        $proxyUri.Scheme -notin @("http", "https") -or -not $proxyUri.Host -or
+        $proxyUri.UserInfo -or $proxyUri.Query -or $proxyUri.Fragment -or
+        $GitHubProxy -match '[\s"\x00-\x1f]') {
+        throw "-GitHubProxy 应为 http(s)://主机[:端口][/路径]，不能包含凭据、查询参数或片段"
+    }
+    $GitHubProxy = $GitHubProxy.TrimEnd("/")
 }
 
 $installDir = Join-Path $env:ProgramData "DFPanel"
@@ -86,6 +97,46 @@ $localDefault = Join-Path $repoRoot "output\dfpanel-windows-amd64.exe"
 $tempDir = Join-Path ([IO.Path]::GetTempPath()) ("dfpanel-deploy-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
+function Get-GitHubUrl {
+    param([string]$Original)
+    if ($GitHubProxy) { return "$GitHubProxy/$Original" }
+    return $Original
+}
+
+function Get-LatestStableVersion {
+    $apiUrl = "https://api.github.com/repos/$repository/releases/latest"
+    $headers = @{ 'Accept' = 'application/vnd.github+json'; 'User-Agent' = 'DFPanel-deploy' }
+    try {
+        $release = Invoke-RestMethod -Uri (Get-GitHubUrl $apiUrl) -Headers $headers -TimeoutSec 30
+    }
+    catch {
+        if (-not $GitHubProxy) {
+            throw "无法获取 GitHub 最新正式版；可使用 -Version 指定版本，或使用 -BinaryPath 指定本地二进制：$($_.Exception.Message)"
+        }
+        Write-Warning "加速源查询最新版本失败，尝试直接访问 GitHub API；也可用 -Version 跳过查询。"
+        try {
+            $release = Invoke-RestMethod -Uri $apiUrl -Headers $headers -TimeoutSec 15
+        }
+        catch {
+            throw "加速源和 GitHub API 都无法查询最新正式版；可使用 -Version 指定版本：$($_.Exception.Message)"
+        }
+    }
+    $tag = [string]$release.tag_name
+    if ($release.draft -or $release.prerelease -or $tag -notmatch '^v([0-9]+\.[0-9]+\.[0-9]+)$') {
+        throw "GitHub 最新正式版的标签无效：$tag"
+    }
+    return $Matches[1]
+}
+
+function Get-BinaryVersion {
+    param([string]$Path)
+    $output = (& $Path -version 2>$null | Select-Object -Last 1)
+    if ($LASTEXITCODE -ne 0 -or $output -notmatch '^dfpanel\s+([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?)$') {
+        throw "无法读取面板二进制版本：$Path"
+    }
+    return $Matches[1]
+}
+
 function Get-ReleaseBinary {
     param([string]$ReleaseVersion, [string]$WorkDir)
     if (-not $ReleaseVersion) { return $null }
@@ -93,10 +144,10 @@ function Get-ReleaseBinary {
     $archiveName = "dfpanel-$ReleaseVersion-windows-amd64.zip"
     $archive = Join-Path $WorkDir $archiveName
     $checksums = Join-Path $WorkDir "checksums.txt"
-    $base = "https://github.com/$repository/releases/download/v$ReleaseVersion"
+    $base = Get-GitHubUrl "https://github.com/$repository/releases/download/v$ReleaseVersion"
 
     # gh 可读取已经登录的私有仓库；未安装或未登录时尝试公开 Release。
-    if (Get-Command gh -ErrorAction SilentlyContinue) {
+    if (-not $GitHubProxy -and (Get-Command gh -ErrorAction SilentlyContinue)) {
         try {
             & gh release download "v$ReleaseVersion" -R $repository -p $archiveName -p checksums.txt -D $WorkDir 2>$null | Out-Null
         }
@@ -130,8 +181,8 @@ function Get-ReleaseAgentBundle {
     $archiveName = "dfpanel-agent-bundle-$ReleaseVersion.tar.gz"
     $archive = Join-Path $WorkDir $archiveName
     $checksums = Join-Path $WorkDir "checksums.txt"
-    $base = "https://github.com/$repository/releases/download/v$ReleaseVersion"
-    if (Get-Command gh -ErrorAction SilentlyContinue) {
+    $base = Get-GitHubUrl "https://github.com/$repository/releases/download/v$ReleaseVersion"
+    if (-not $GitHubProxy -and (Get-Command gh -ErrorAction SilentlyContinue)) {
         try {
             if (Test-Path -LiteralPath $checksums) {
                 & gh release download "v$ReleaseVersion" -R $repository -p $archiveName -D $WorkDir 2>$null | Out-Null
@@ -175,6 +226,10 @@ try {
         Write-Host "==> 使用指定的本地二进制：$source"
     }
     else {
+        if (-not $Version) {
+            $Version = Get-LatestStableVersion
+            Write-Host "==> 最新正式版：$Version"
+        }
         $source = Get-ReleaseBinary -ReleaseVersion $Version -WorkDir $tempDir
         if ($source -and -not (Test-ServiceBinary -Path $source)) {
             Write-Warning "Release 二进制不支持 Windows 服务，尝试本地构建产物"
@@ -191,8 +246,12 @@ try {
     if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-Item -LiteralPath $source).Length -eq 0) {
         throw "二进制不存在或为空：$source"
     }
-    & $source -version | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "二进制无法在当前机器运行：$source" }
+    $binaryVersion = Get-BinaryVersion -Path $source
+    if (-not $Version) {
+        $Version = $binaryVersion
+        Write-Host "==> 使用本地二进制版本：$Version"
+    }
+    if ($binaryVersion -ne $Version) { throw "面板二进制版本 $binaryVersion 与所选版本 $Version 不一致" }
     if (-not (Test-ServiceBinary -Path $source)) {
         throw "二进制不支持 Windows 服务：$source；请构建当前源码或使用新版 Release"
     }
@@ -210,7 +269,15 @@ try {
             }
             else {
                 if (-not (Get-Command go -ErrorAction SilentlyContinue) -or -not (Test-Path -LiteralPath (Join-Path $repoRoot "go.mod"))) {
-                    throw "没有 Agent 全平台包；请发布 v$Version 的 Pre-release，或用 -AgentBundle 指定本地包"
+                    throw "没有 Agent 全平台包；请发布 v$Version 的 Release，或用 -AgentBundle 指定本地包"
+                }
+                $sourceVersionPath = Join-Path $repoRoot "VERSION"
+                if (-not (Test-Path -LiteralPath $sourceVersionPath)) {
+                    throw "当前目录没有源码版本文件 VERSION，不能构建 Agent 包；请使用 -AgentBundle"
+                }
+                $sourceVersion = (Get-Content -LiteralPath $sourceVersionPath -Raw -Encoding UTF8).Trim()
+                if ($sourceVersion -ne $Version) {
+                    throw "当前源码版本与面板版本 $Version 不一致，不能从当前源码构建 Agent 包；请使用 -AgentBundle"
                 }
                 $bundleSource = Join-Path $tempDir "dfpanel-agent-bundle-$Version.tar.gz"
                 Write-Host "==> Release 不可用，从当前源码构建 Agent 全平台包"

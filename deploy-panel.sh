@@ -19,6 +19,7 @@ AGENT_BUNDLE_PATH=""
 AGENT_VERSION=""
 IMAGE=""
 VERSION=""
+GITHUB_PROXY=""
 WORK_DIR=""
 
 usage() {
@@ -26,14 +27,17 @@ usage() {
 用法：sudo ./deploy-panel.sh [--mode docker|binary] [--public-url URL] [选项]
 
 选项：
+  --mode MODE      docker 或 binary；交互运行可选择，非交互运行必须指定
+  --public-url URL Agent 可访问的面板地址；交互运行可输入，非交互运行必须指定
   --binary PATH    使用本地面板二进制；不指定时先下载对应版本的 GitHub Release
   --agent-bundle PATH  使用本地 Agent 全平台包；不指定时从同一 Release 下载
-  --version VER    Release / 默认镜像版本；默认读取同目录 VERSION
-  --image IMAGE    Docker 镜像；默认 dreamstation625/dfpanel:<VERSION>
+  --version VER    指定 Release / Docker 镜像版本；二进制模式默认使用最新正式版
+  --github-proxy URL  GitHub 加速前缀，需支持代理完整 URL（API 与 Release 文件）
+  --image IMAGE    Docker 镜像；默认 dreamstation625/dfpanel:latest；显式指定版本时使用该版本标签
   --listen :PORT   面板监听端口，默认 :7226
   -h, --help       显示帮助
 
-Release 不存在时，二进制模式回退到同目录 output/dfpanel-linux-<架构>。
+Release 下载失败时，二进制模式可回退到同目录中版本相符的 output/dfpanel-linux-<架构>。
 数据保存在 /var/lib/dfpanel；重复执行可更新程序，部署脚本不会删除数据。
 EOF
 }
@@ -62,6 +66,7 @@ while [[ $# -gt 0 ]]; do
     --agent-bundle) [[ $# -ge 2 ]] || fail "--agent-bundle 缺少值"; AGENT_BUNDLE="$2"; shift 2 ;;
     --image)      [[ $# -ge 2 ]] || fail "--image 缺少值"; IMAGE="$2"; shift 2 ;;
     --version)    [[ $# -ge 2 ]] || fail "--version 缺少值"; VERSION="$2"; shift 2 ;;
+    --github-proxy) [[ $# -ge 2 ]] || fail "--github-proxy 缺少值"; GITHUB_PROXY="$2"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
     *)            fail "未知参数：$1" ;;
   esac
@@ -85,12 +90,14 @@ fi
   fail "--public-url 应为 http(s)://主机[:端口]，不能包含路径或凭据"
 PUBLIC_URL="${PUBLIC_URL%/}"
 [[ "$LISTEN" =~ ^:[0-9]{1,5}$ ]] || fail "--listen 应为 :端口，例如 :7226"
+if [[ -n "$GITHUB_PROXY" ]]; then
+  [[ "$GITHUB_PROXY" =~ ^https?://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$ ]] ||
+    fail "--github-proxy 应为 http(s)://主机[:端口][/路径]，不能包含凭据、查询参数或片段"
+  GITHUB_PROXY="${GITHUB_PROXY%/}"
+fi
 command -v curl >/dev/null 2>&1 || fail "需要 curl 执行下载和启动检查"
 [[ "$(id -u)" -eq 0 ]] || fail "需要 root 权限，请使用 sudo 运行"
 
-if [[ -z "$VERSION" && -f "$ROOT/VERSION" ]]; then
-  VERSION="$(tr -d ' \n\r' < "$ROOT/VERSION")"
-fi
 if [[ -n "$VERSION" ]]; then
   [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] ||
     fail "版本号格式不合法：$VERSION"
@@ -107,15 +114,47 @@ prepare_work_dir() {
   trap '[[ -z "$WORK_DIR" ]] || rm -rf -- "$WORK_DIR"' EXIT
 }
 
+github_url() {
+  if [[ -n "$GITHUB_PROXY" ]]; then
+    printf '%s/%s' "$GITHUB_PROXY" "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+latest_stable_version() {
+  local response version api_url
+  api_url="https://api.github.com/repos/$REPOSITORY/releases/latest"
+  if ! response="$(curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
+    -H 'Accept: application/vnd.github+json' -H 'User-Agent: DFPanel-deploy' \
+    "$(github_url "$api_url")" 2>/dev/null)"; then
+    [[ -n "$GITHUB_PROXY" ]] || return 1
+    printf '提示：加速源查询最新版本失败，尝试直接访问 GitHub API；也可用 --version 跳过查询。\n' >&2
+    response="$(curl -fsSL --retry 1 --connect-timeout 5 --max-time 15 \
+      -H 'Accept: application/vnd.github+json' -H 'User-Agent: DFPanel-deploy' \
+      "$api_url")" || return 1
+  fi
+  version="$(printf '%s\n' "$response" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v([^"]+)".*/\1/p')"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  printf '%s' "$version"
+}
+
+binary_version() {
+  local output
+  output="$("$1" -version 2>/dev/null)" || return 1
+  [[ "$output" =~ ^dfpanel[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?)[[:space:]]*$ ]] || return 1
+  printf '%s' "${BASH_REMATCH[1]}"
+}
+
 download_release() {
   local archive="dfpanel-${VERSION}-linux-${ARCH}.tar.gz"
-  local base="https://github.com/$REPOSITORY/releases/download/v$VERSION"
+  local base="$(github_url "https://github.com/$REPOSITORY/releases/download/v$VERSION")"
   local archive_path="$WORK_DIR/$archive"
   local checksums="$WORK_DIR/checksums.txt"
   [[ -n "$VERSION" ]] || return 1
 
   # gh 支持已登录的私有仓库；未安装或未登录时尝试公开 Release 地址。
-  if command -v gh >/dev/null 2>&1; then
+  if [[ -z "$GITHUB_PROXY" ]] && command -v gh >/dev/null 2>&1; then
     if [[ -s "$checksums" ]]; then
       gh release download "v$VERSION" -R "$REPOSITORY" -p "$archive" -D "$WORK_DIR" >/dev/null 2>&1 || true
     else
@@ -144,11 +183,11 @@ download_release() {
 
 download_agent_bundle() {
   local archive="dfpanel-agent-bundle-${VERSION}.tar.gz"
-  local base="https://github.com/$REPOSITORY/releases/download/v$VERSION"
+  local base="$(github_url "https://github.com/$REPOSITORY/releases/download/v$VERSION")"
   local archive_path="$WORK_DIR/$archive"
   local checksums="$WORK_DIR/checksums.txt"
   [[ -n "$VERSION" ]] || return 1
-  if command -v gh >/dev/null 2>&1; then
+  if [[ -z "$GITHUB_PROXY" ]] && command -v gh >/dev/null 2>&1; then
     if [[ -s "$checksums" ]]; then
       gh release download "v$VERSION" -R "$REPOSITORY" -p "$archive" -D "$WORK_DIR" >/dev/null 2>&1 || true
     else
@@ -182,6 +221,9 @@ if [[ "$MODE" == "docker" ]]; then
   fi
   if [[ -z "$IMAGE" ]]; then
     IMAGE="dreamstation625/dfpanel:${VERSION:-latest}"
+  fi
+  if [[ -n "$GITHUB_PROXY" ]]; then
+    info "Docker 模式从 Docker Hub 拉取镜像，--github-proxy 不影响镜像下载"
   fi
   [[ "$IMAGE" =~ ^[a-zA-Z0-9._/:@-]+$ ]] || fail "镜像名称包含不支持的字符"
   mkdir -p "$DATA_DIR" "$COMPOSE_DIR"
@@ -221,6 +263,16 @@ if command -v docker >/dev/null 2>&1 &&
   fail "检测到运行中的 dfpanel 容器，请先停止容器部署，避免端口冲突"
 fi
 prepare_work_dir
+if [[ -z "$VERSION" ]]; then
+  if [[ -n "$BINARY_PATH" ]]; then
+    [[ -s "$BINARY_PATH" ]] || fail "本地二进制不存在或为空：$BINARY_PATH"
+    VERSION="$(binary_version "$BINARY_PATH")" || fail "无法读取本地面板二进制版本，请使用 --version 指定版本"
+    info "使用本地二进制版本：$VERSION"
+  else
+    VERSION="$(latest_stable_version)" || fail "无法获取 GitHub 最新正式版；可使用 --version 指定版本，或使用 --binary 指定本地二进制"
+    info "最新正式版：$VERSION"
+  fi
+fi
 if [[ -n "$BINARY_PATH" ]]; then
   [[ -f "$BINARY_PATH" ]] || fail "本地二进制不存在：$BINARY_PATH"
   info "使用指定的本地二进制：$BINARY_PATH"
@@ -233,7 +285,8 @@ else
   fi
 fi
 [[ -s "$BINARY_PATH" ]] || fail "二进制文件为空：$BINARY_PATH"
-"$BINARY_PATH" -version >/dev/null || fail "二进制无法在当前机器运行：$BINARY_PATH"
+ACTUAL_VERSION="$(binary_version "$BINARY_PATH")" || fail "二进制无法在当前机器运行或版本号无效：$BINARY_PATH"
+[[ "$ACTUAL_VERSION" == "$VERSION" ]] || fail "面板二进制版本 $ACTUAL_VERSION 与所选版本 $VERSION 不一致"
 
 if [[ -n "$AGENT_BUNDLE" ]]; then
   [[ -s "$AGENT_BUNDLE" ]] || fail "本地 Agent 包不存在或为空：$AGENT_BUNDLE"
@@ -242,7 +295,9 @@ elif ! download_agent_bundle; then
   AGENT_BUNDLE_PATH="$ROOT/output/dfpanel-agent-bundle-${VERSION}.tar.gz"
   if [[ ! -s "$AGENT_BUNDLE_PATH" ]]; then
     command -v go >/dev/null 2>&1 && [[ -f "$ROOT/go.mod" ]] ||
-      fail "没有 Agent 全平台包；请发布 v$VERSION 的 Pre-release，或用 --agent-bundle 指定本地包"
+      fail "没有 Agent 全平台包；请发布 v$VERSION 的 Release，或用 --agent-bundle 指定本地包"
+    [[ -f "$ROOT/VERSION" ]] && [[ "$(tr -d ' \n\r' < "$ROOT/VERSION")" == "$VERSION" ]] ||
+      fail "当前源码版本与面板版本 $VERSION 不一致，不能从当前源码构建 Agent 包；请使用 --agent-bundle"
     AGENT_BUNDLE_PATH="$WORK_DIR/dfpanel-agent-bundle-${VERSION}.tar.gz"
     info "Release 不可用，从当前源码构建 Agent 全平台包"
     (cd "$ROOT" && go run ./cmd/agentbundle -output "$AGENT_BUNDLE_PATH")
