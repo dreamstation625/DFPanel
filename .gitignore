@@ -11,6 +11,7 @@
 # ---- 运行时数据（SQLite、frps 配置与日志、frp 二进制缓存）----
 /data/
 /data-*/
+dfpanel-agent-data/
 /tmp-agent*/
 *.log
 

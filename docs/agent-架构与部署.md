@@ -119,7 +119,7 @@ docker compose up -d            # 或：docker build -t dreamstation625/dfpanel:
 
 ### 5.2 Agent（Docker）
 
-复制本仓库的 `docker-compose.agent.yml` 后，在同目录创建 `.env`，分别填入面板提供的 `DFPANEL_NODE_KEY`、`DFPANEL_NODE_SECRET` 和角色 `DFPANEL_ROLES=frps` 或 `frpc`。同机多实例用不同 Compose 项目名（`-p`）与不同令牌；数据落在 `/opt/dfpanel-agent/<nodeKey>`。
+复制本仓库的 `docker-compose.agent.yml` 后，在同目录创建 `.env`，分别填入面板提供的 `DFPANEL_NODE_KEY`、`DFPANEL_NODE_SECRET` 和角色 `DFPANEL_ROLES=frps` 或 `frpc`。同机多实例用不同 Compose 项目名（`-p`）与不同令牌；数据默认落在 Compose 文件旁的 `./dfpanel-agent-data/<nodeKey>/`。
 
 ```bash
 docker compose -p dfpanel-agent-<nodeKey> -f docker-compose.agent.yml up -d
@@ -163,7 +163,7 @@ Agent 支持两种运行时，`DFPANEL_RUNTIME` 控制，对 frps 与 frpc 分�
 
 ```yaml
 volumes:
-  - /opt/dfpanel-agent/<nodeKey>:/var/lib/dfpanel-agent
+  - ./dfpanel-agent-data/<nodeKey>:/var/lib/dfpanel-agent
   - /etc/machine-id:/host/etc/machine-id:ro
   - /var/run/docker.sock:/var/run/docker.sock
 ```
@@ -196,6 +196,8 @@ curl -fsSL http://<panel>:7226/install.sh | sudo bash -s -- \
 # Windows（计划任务开机自启）
 powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:7226/install.ps1 -OutFile install.ps1; .\install.ps1 -Panel http://<panel>:7226 -NodeKey <KEY> -NodeSecret <SECRET> -Roles frpc"
 ```
+
+Windows 下 Docker 模式尚未验证；安装命令页面仅提供进程模式，接口也会拒绝 Windows 的 Docker 运行时请求。
 
 分发端点：
 

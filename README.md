@@ -97,7 +97,7 @@ Windows 脚本会检查二进制是否支持 Windows 服务。若当前 Release 
 docker compose -f docker-compose.agent.yml up -d
 ```
 
-Compose 示例默认使用 Linux host 网络。同机运行多个 Agent 时，为每个 Agent 使用独立的 nodeKey、数据目录和 Compose 项目名。使用端口映射时，请按实际 frps 监听端口、Dashboard 端口及隧道端口调整映射。Agent 的 `DFPANEL_RUNTIME` 默认为 `process`；选择 `docker` 时还需挂载 Docker socket，示例见 [Agent 部署文档](docs/agent-架构与部署.md)。请保留面板和 Agent 的数据目录；其中的 `instance-id` 用于防止同一 Agent 身份在多处重复安装。
+Compose 示例默认使用 Linux host 网络。Agent 数据默认保存在 Compose 文件同目录的 `./dfpanel-agent-data/<nodeKey>/`。同机运行多个 Agent 时，为每个 Agent 使用独立的 nodeKey、数据目录和 Compose 项目名。使用端口映射时，请按实际 frps 监听端口、Dashboard 端口及隧道端口调整映射。Agent 的 `DFPANEL_RUNTIME` 默认为 `process`；选择 `docker` 时还需挂载 Docker socket，示例见 [Agent 部署文档](docs/agent-架构与部署.md)。请保留面板和 Agent 的数据目录；其中的 `instance-id` 用于防止同一 Agent 身份在多处重复安装。
 
 ### 二进制
 
@@ -121,7 +121,7 @@ Compose 示例默认使用 Linux host 网络。同机运行多个 Agent 时，�
 ./output/dfpanel-linux-amd64 -listen :7226 -data ./data -public-url http://<面板地址>:7226
 ```
 
-首次访问面板完成初始化。安装远端 Agent 时，使用「Agent 管理 → 安装命令」生成的命令：Linux / macOS 脚本注册系统服务，Windows 脚本注册开机启动的计划任务。安装命令包含 Agent 密钥，请在目标机器上执行并妥善保管。
+首次访问面板完成初始化。安装远端 Agent 时，使用「Agent 管理 → 安装命令」生成的命令：Linux / macOS 脚本注册系统服务，Windows 脚本注册开机启动的计划任务。Windows 下 Docker 模式尚未验证，安装界面只提供进程模式。安装命令包含 Agent 密钥，请在目标机器上执行并妥善保管。
 
 使用本次更新构建的 Docker 面板镜像已内置 Linux、Windows 和 macOS 安装脚本支持的 Agent 二进制，直接执行「Agent 管理 → 安装命令」即可。Agent 版本取自镜像构建时的 `VERSION.agent`；升级时拉取新面板镜像并重新创建容器。
 
@@ -155,7 +155,7 @@ Agent 常用环境变量为 `DFPANEL_URL`、`DFPANEL_NODE_KEY`、`DFPANEL_NODE_S
 | --- | --- | --- |
 | Docker Compose 面板 | `docker compose down` | `./data` 目录保留 |
 | Linux 部署脚本的 Docker 面板 | `docker compose -f /opt/dfpanel/compose.yml down` | `/var/lib/dfpanel` 保留 |
-| Docker Compose Agent | 在对应 Compose 项目目录执行 `docker compose -f docker-compose.agent.yml down` | `/opt/dfpanel-agent/<nodeKey>` 保留 |
+| Docker Compose Agent | 在对应 Compose 项目目录执行 `docker compose -f docker-compose.agent.yml down` | Compose 文件旁的 `./dfpanel-agent-data/<nodeKey>` 保留 |
 | `docker run` | 面板执行 `docker rm -f dfpanel`；Agent 执行 `docker rm -f dfpanel-agent-<nodeKey>` | 挂载的数据目录保留 |
 | 二进制面板 | 停止面板进程并删除面板程序 | `-data` 指定的目录保留，需自行决定是否删除 |
 | Linux 部署脚本的二进制面板 | `sudo systemctl disable --now dfpanel`，删除 `/etc/systemd/system/dfpanel.service` 和 `/usr/local/bin/dfpanel`，再执行 `sudo systemctl daemon-reload` | `/var/lib/dfpanel` 保留 |

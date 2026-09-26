@@ -27,7 +27,7 @@ services:
       TZ: "Asia/Shanghai"
 
     volumes:
-      - /opt/dfpanel-agent/${DFPANEL_NODE_KEY:?set_node_key}:/var/lib/dfpanel-agent
+      - ./dfpanel-agent-data/${DFPANEL_NODE_KEY:?set_node_key}:/var/lib/dfpanel-agent
       - /etc/machine-id:/host/etc/machine-id:ro
       # DFPANEL_RUNTIME=docker 时启用：
       # - /var/run/docker.sock:/var/run/docker.sock

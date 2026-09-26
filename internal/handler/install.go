@@ -50,6 +50,10 @@ func (h *InstallHandler) AgentInstallCommand(c *gin.Context) {
 	}
 	osName := strings.ToLower(c.DefaultQuery("os", "linux"))
 	runtime := strings.ToLower(c.DefaultQuery("runtime", "process"))
+	if strings.HasPrefix(osName, "win") && runtime == "docker" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Windows 下 Docker 模式尚未验证，请使用进程模式"})
+		return
+	}
 	c.JSON(http.StatusOK, h.buildInstallCommands(h.panelURL(c), &agent, osName, runtime))
 }
 
@@ -71,6 +75,10 @@ func (h *InstallHandler) NodeInstallCommand(c *gin.Context) {
 	}
 	osName := strings.ToLower(c.DefaultQuery("os", "linux"))
 	runtime := strings.ToLower(c.DefaultQuery("runtime", "process"))
+	if strings.HasPrefix(osName, "win") && runtime == "docker" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Windows 下 Docker 模式尚未验证，请使用进程模式"})
+		return
+	}
 	c.JSON(http.StatusOK, h.buildInstallCommands(h.panelURL(c), &agent, osName, runtime))
 }
 
@@ -226,7 +234,7 @@ func (h *InstallHandler) buildInstallCommands(panelURL string, agent *model.Agen
 	if roles == "" {
 		roles = "frpc"
 	}
-	if runtime != "docker" {
+	if runtime != "docker" || strings.HasPrefix(osName, "win") {
 		runtime = "process"
 	}
 	image := h.agentImage()
@@ -238,8 +246,10 @@ func (h *InstallHandler) buildInstallCommands(panelURL string, agent *model.Agen
 		Roles:    roles,
 	}
 	res.Binary = binaryInstallCommand(panelURL, agent, osName, roles, runtime)
-	res.Docker = dockerRunCommand(panelURL, agent, roles, runtime, image)
-	res.Compose = dockerComposeSnippet(panelURL, agent, roles, runtime, image)
+	if !strings.HasPrefix(osName, "win") {
+		res.Docker = dockerRunCommand(panelURL, agent, roles, runtime, image)
+		res.Compose = dockerComposeSnippet(panelURL, agent, roles, runtime, image)
+	}
 	return res
 }
 
@@ -282,10 +292,9 @@ func binaryInstallCommand(panelURL string, agent *model.Agent, osName, roles, ru
 	}
 }
 
-// agentDataHostDir docker 运行时的数据目录：必须落在宿主机上。
-// frp 运行时要把容器里的配置与 frp 二进制 bind-mount 进 frp 容器，宿主机的 docker daemon
-// 得能直接看到这些文件；命名卷实际在 /var/lib/docker/volumes 下，路径对不上，挂不进去。
+// docker run 使用宿主机绝对路径；Compose 则把数据放在 Compose 文件旁的独立子目录。
 const agentDataHostDir = "/opt/dfpanel-agent"
+const agentComposeDataDir = "./dfpanel-agent-data"
 
 func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime, image string) string {
 	dataDir := agentDataHostDir + "/" + agent.NodeKey
@@ -310,7 +319,7 @@ func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime, image
 }
 
 func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, image string) string {
-	volumes := "      - " + agentDataHostDir + "/" + agent.NodeKey + ":/var/lib/dfpanel-agent\n" +
+	volumes := "      - " + agentComposeDataDir + "/" + agent.NodeKey + ":/var/lib/dfpanel-agent\n" +
 		"      - /etc/machine-id:/host/etc/machine-id:ro\n"
 	if runtime == "docker" {
 		volumes += "      - /var/run/docker.sock:/var/run/docker.sock\n"

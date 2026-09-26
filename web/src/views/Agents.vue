@@ -114,6 +114,7 @@ const installRuntime = ref<'process' | 'docker'>('process')
 const installMode = ref<'binary' | 'docker' | 'compose'>('binary')
 const installCmds = ref<InstallCommands | null>(null)
 const installLoading = ref(false)
+let installRequestId = 0
 
 const historyVisible = ref(false)
 const historyTitle = ref('')
@@ -212,20 +213,32 @@ async function openInstall(a: AgentInfo) {
   await loadInstall()
 }
 
+function onInstallOSChange() {
+  if (installOS.value === 'windows') {
+    installRuntime.value = 'process'
+    installMode.value = 'binary'
+  }
+  void loadInstall()
+}
+
 /** 进程模式只给一键脚本：Agent 装成宿主机二进制，frp 也是子进程，没有容器什么事 */
 function onRuntimeChange() {
+  if (installOS.value === 'windows') installRuntime.value = 'process'
   if (installRuntime.value === 'process') installMode.value = 'binary'
-  loadInstall()
+  void loadInstall()
 }
 
 async function loadInstall() {
   const a = installTarget.value
   if (!a) return
+  const requestId = ++installRequestId
+  installCmds.value = null
   installLoading.value = true
   try {
-    installCmds.value = await agentApi.installCommand(a.id, installOS.value, installRuntime.value)
+    const commands = await agentApi.installCommand(a.id, installOS.value, installRuntime.value)
+    if (requestId === installRequestId) installCmds.value = commands
   } finally {
-    installLoading.value = false
+    if (requestId === installRequestId) installLoading.value = false
   }
 }
 
@@ -447,17 +460,17 @@ onUnmounted(() => {
         </el-descriptions>
 
         <div class="install-bar">
-          <el-radio-group v-model="installOS" size="small" @change="loadInstall">
+          <el-radio-group v-model="installOS" size="small" @change="onInstallOSChange">
             <el-radio-button value="linux">Linux / macOS</el-radio-button>
             <el-radio-button value="windows">Windows</el-radio-button>
           </el-radio-group>
           <el-radio-group v-model="installRuntime" size="small" style="margin-left: 12px" @change="onRuntimeChange">
             <el-radio-button value="process">进程运行</el-radio-button>
-            <el-radio-button value="docker">Docker 容器运行</el-radio-button>
+            <el-radio-button v-if="installOS !== 'windows'" value="docker">Docker 容器运行</el-radio-button>
           </el-radio-group>
         </div>
 
-        <el-tabs v-if="installRuntime === 'docker'" v-model="installMode">
+        <el-tabs v-if="installOS !== 'windows' && installRuntime === 'docker'" v-model="installMode">
           <el-tab-pane label="一键脚本" name="binary" />
           <el-tab-pane label="docker run" name="docker" />
           <el-tab-pane label="docker compose" name="compose" />
@@ -466,9 +479,10 @@ onUnmounted(() => {
         <pre class="code-block">{{ currentCommand }}</pre>
         <div class="hint-line">
           <span v-if="installRuntime === 'docker' && installMode !== 'binary'">
-            容器内已内置 frps / frpc；需挂载 /var/run/docker.sock。
+            Agent 从面板获取 frp 二进制；Docker 运行时还需挂载 /var/run/docker.sock。
           </span>
-          <span v-else>自动注册 systemd / launchd / 计划任务并开机自启。</span>
+          <span v-else-if="installOS === 'windows'">Windows Docker 模式尚未验证；请使用进程模式，安装脚本会注册开机启动的计划任务。</span>
+          <span v-else>自动注册 systemd / launchd 并开机自启。</span>
         </div>
       </div>
       <template #footer>

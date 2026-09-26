@@ -191,7 +191,7 @@ func TestInstallCommandsCarryFrpVersion(t *testing.T) {
 		t.Errorf("compose 片段应带上版本：%s", res.Compose)
 	}
 	// 同机多个 Agent 必须各自使用独立容器名和宿主数据目录。
-	if !strings.Contains(res.Compose, "/opt/dfpanel-agent/KEY:/var/lib/dfpanel-agent") ||
+	if !strings.Contains(res.Compose, "./dfpanel-agent-data/KEY:/var/lib/dfpanel-agent") ||
 		!strings.Contains(res.Compose, "container_name: dfpanel-agent-KEY") {
 		t.Errorf("compose 的实例隔离信息不正确：%s", res.Compose)
 	}
@@ -202,6 +202,9 @@ func TestInstallCommandsCarryFrpVersion(t *testing.T) {
 	winRes := h.buildInstallCommands("http://panel:7226", a, "windows", "process")
 	if !strings.Contains(winRes.Binary, "-FrpVersion 0.71.0") {
 		t.Errorf("Windows 安装命令应带上版本：%s", winRes.Binary)
+	}
+	if winRes.Docker != "" || winRes.Compose != "" {
+		t.Errorf("Windows 安装命令不应提供未经验证的 Docker 模式：%+v", winRes)
 	}
 
 	// 没设期望版本（不管理）时不该硬塞参数进去
