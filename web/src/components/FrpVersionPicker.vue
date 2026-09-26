@@ -63,7 +63,7 @@ const switchLabel = computed(() => {
 /** 三种目标的说明文案，按有没有实例、是不是容器运行时分开说 */
 const switchHint = computed(() => {
   if (instanceCount.value === 0) return '还没有托管的实例，切换只替换二进制版本，不会重启任何服务。'
-  if (isDocker.value) return '切换会把二进制挂进容器并覆盖启动入口。容器底座镜像里不含 frp，二进制必须先由面板下发，否则容器起不来。'
+  if (isDocker.value) return '切换后会重建 frp 容器。请先在面板准备对应版本的二进制。'
   if (isAgent.value) return '只做切换，不下载：这个版本的二进制要先在「设置 → frp 二进制」里按平台下载好。'
   return '「下载」只预置二进制，不影响在跑的服务；「切换」才生效。'
 })

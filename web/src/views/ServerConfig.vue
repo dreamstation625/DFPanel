@@ -468,7 +468,7 @@ onMounted(load)
                 <el-radio-button value="local">面板本机托管</el-radio-button>
                 <el-radio-button value="agent">远端 Agent 托管</el-radio-button>
               </el-radio-group>
-              <span class="hint">本机由面板启动 frps，Agent 托管则下发到目标服务器执行</span>
+              <span class="hint">本机托管由面板启动 frps；Agent 托管在目标机器上运行。</span>
             </el-form-item>
             <el-form-item label="自动启动">
               <el-switch v-model="form.autoStart" />
@@ -487,7 +487,7 @@ onMounted(load)
             </el-form-item>
             <el-form-item v-if="form.deployMode === 'agent'" label="公网地址 publicAddr">
               <el-input v-model="form.publicAddr" placeholder="如 1.2.3.4 或 frp.example.com" />
-              <span class="hint">供 frpc 生成 serverAddr，留空用面板地址</span>
+              <span class="hint">用于生成 frpc 的 serverAddr；留空时使用面板地址。</span>
             </el-form-item>
 
             <el-form-item>

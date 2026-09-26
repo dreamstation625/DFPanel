@@ -180,7 +180,7 @@ async function submitCreate() {
       return
     }
     // 没选版本：先把 frp 版本定下来，关掉弹窗再给安装命令
-    ElMessage.info('Agent 已创建，先选一个 frp 版本')
+    ElMessage.info('Agent 已创建，请选择 frp 版本。')
     pendingInstall.value = created
     // 等创建弹窗的收起动画走完再开版本弹窗，避免两层叠在一起
     window.setTimeout(() => openFrp(created), 200)
@@ -388,7 +388,7 @@ onUnmounted(() => {
           </template>
         </el-table-column>
       </el-table>
-      <el-empty v-else description="还没有 Agent，点击右上角新建后复制安装命令到目标服务器" />
+      <el-empty v-else description="暂无 Agent。新建后，在目标机器执行安装命令。" />
     </el-card>
 
     <el-dialog v-model="createVisible" title="新建 Agent" width="520px">
@@ -420,7 +420,7 @@ onUnmounted(() => {
             />
           </el-select>
           <div class="hint-line">
-            只记为期望版本，不切换、不重启。该版本要先在设置页下载好，再到 Agent 上切换。
+            此处仅设置目标版本，不会安装或重启。切换前请准备对应平台的二进制。
           </div>
         </el-form-item>
         <el-form-item label="备注">
@@ -488,7 +488,7 @@ onUnmounted(() => {
           <span v-if="installMode === 'compose'">将上方内容保存为 docker-compose.agent.yml，在该文件目录执行 docker compose -p dfpanel-agent-{{ installTarget.nodeKey }} -f docker-compose.agent.yml up -d。<template v-if="installRuntime === 'docker'">frp Docker 运行时还需挂载 /var/run/docker.sock。</template></span>
           <span v-else-if="installMode === 'docker' && installRuntime === 'docker'">Agent 从面板获取 frp 二进制；Docker 运行时还需挂载 /var/run/docker.sock。</span>
           <span v-else-if="installMode === 'docker'">Agent 容器中的 frp 由进程模式运行，日志位于挂载的数据目录。</span>
-          <span v-else-if="installOS === 'windows'">Windows Docker 模式尚未验证；请使用进程模式，安装脚本会注册开机启动的计划任务。</span>
+          <span v-else-if="installOS === 'windows'">Windows Docker 模式尚未验证。进程模式安装会创建开机启动的计划任务。</span>
           <span v-else>自动注册 systemd / launchd 并开机自启。</span>
         </div>
         <div class="command-heading uninstall-heading">
@@ -496,7 +496,7 @@ onUnmounted(() => {
           <el-button link type="primary" :disabled="!currentUninstallCommand" @click="copy(currentUninstallCommand)">复制卸载命令</el-button>
         </div>
         <pre class="code-block">{{ currentUninstallCommand }}</pre>
-        <div class="hint-line">卸载会停止 Agent 及其托管的 frp；默认保留数据目录和日志，本地卸载不会删除面板中的 Agent 记录。Compose 命令需在保存配置的目录执行。</div>
+        <div class="hint-line">卸载后保留数据目录和日志。面板中的 Agent 记录需单独删除。Compose 命令需在配置文件所在目录执行。</div>
       </div>
       <template #footer>
         <el-button @click="installVisible = false">关闭</el-button>

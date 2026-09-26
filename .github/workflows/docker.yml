@@ -6,7 +6,7 @@ name: Docker
 #   - 手动触发（强制重新构建）
 #
 # 面板版本取自 VERSION，Agent 版本取自 VERSION.agent（缺省跟随面板）。
-# Agent 镜像按 Agent 版本打标签：远端已有同版本镜像就跳过构建，只改面板时不必重建 Agent。
+# Agent 镜像按 Agent 版本打标签：预发布版已有同版本镜像时跳过构建；正式版重新构建以同步 latest。
 #
 # 版本号格式：0.0.1（正式）或 0.0.1-beta / 0.0.1-beta.2 / 0.0.1-beta.02 / 0.0.1-rc.1（预发布）。
 # 预发布版本只打版本号标签，不覆盖 latest。
@@ -209,8 +209,13 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if [ "${{ needs.verify.outputs.latest }}" = "true" ]; then
+            echo "正式版需要同步 latest，正常构建"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if docker manifest inspect "${{ vars.DOCKERHUB_USERNAME }}/dfpanel-agent:${TAG}" > /dev/null 2>&1; then
-            echo "dfpanel-agent:${TAG} 已存在，跳过构建（要重建请 bump VERSION.agent，或手动触发并勾选 force）"
+            echo "dfpanel-agent:${TAG} 已存在，跳过预发布版构建（要重建请提升 VERSION.agent，或手动触发并勾选 force）"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "dfpanel-agent:${TAG} 不存在，正常构建"

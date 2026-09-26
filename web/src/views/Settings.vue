@@ -300,7 +300,7 @@ onMounted(load)
         </div>
       </template>
       <div class="hint" style="margin-bottom: 12px">
-        Agent 用的 frp 都从面板下发。按目标机器的平台先下载好，Agent 切换版本时直接命中，不用现抓上游。
+        Agent 使用面板缓存的 frp 二进制。切换版本前，请下载对应平台的文件。
       </div>
 
       <div class="dl-bar">

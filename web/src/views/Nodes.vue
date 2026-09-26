@@ -429,7 +429,7 @@ async function submitProxy() {
       await proxyApi.create(node.id, { ...proxyForm })
     }
     proxyVisible.value = false
-    ElMessage.success('已保存，记住点击「应用配置」才会生效')
+    ElMessage.success('已保存。点击「应用配置」后生效。')
     await loadProxies(node.id)
     await load()
   } finally {
@@ -494,7 +494,7 @@ async function submitVisitor() {
       await visitorApi.create(node.id, { ...visitorForm })
     }
     visitorVisible.value = false
-    ElMessage.success('已保存，记住点击「应用配置」才会生效')
+    ElMessage.success('已保存。点击「应用配置」后生效。')
     await loadVisitors(node.id)
     await load()
   } finally {
@@ -753,7 +753,7 @@ onMounted(load)
             <FieldHelp :doc="DOC.clientCommon" text="留空取关联 frps 的公网地址" />
           </template>
           <el-input v-model="form.serverAddr" placeholder="留空自动取 frps 公网地址 / 面板地址" />
-          <span class="hint">只填主机名或 IP，不要带 http://</span>
+          <span class="hint">填写主机名或 IP，不含协议前缀。</span>
         </el-form-item>
         <el-form-item>
           <template #label>

@@ -14,8 +14,59 @@
 </p>
 
 <p align="center">
-  <a href="#主要功能">功能</a> · <a href="#技术栈与版本">技术栈</a> · <a href="#安装">安装</a> · <a href="#卸载">卸载</a> · <a href="#文档与源码">文档</a>
+  <a href="#界面预览">截图</a> · <a href="#主要功能">功能</a> · <a href="#技术栈与版本">技术栈</a> · <a href="#安装">安装</a> · <a href="#卸载">卸载</a> · <a href="#文档与源码">文档</a>
 </p>
+
+## 界面预览
+
+<p align="center">
+  <a href="img/1-概览.png"><img src="img/1-概览.png" alt="面板概览" width="680" /></a>
+</p>
+
+<details>
+<summary>服务端配置</summary>
+<p align="center">
+  <a href="img/2-服务端-1.png"><img src="img/2-服务端-1.png" alt="服务端基础配置" width="400" /></a>
+  <a href="img/2-服务端-2.png"><img src="img/2-服务端-2.png" alt="服务端认证与 Dashboard" width="400" /></a>
+  <a href="img/2-服务端-3.png"><img src="img/2-服务端-3.png" alt="frps 配置预览" width="400" /></a>
+  <a href="img/2-服务端-4.png"><img src="img/2-服务端-4.png" alt="服务端日志" width="400" /></a>
+  <a href="img/2-服务端-5.png"><img src="img/2-服务端-5.png" alt="服务端配置历史" width="400" /></a>
+</p>
+</details>
+
+<details>
+<summary>Agent 管理</summary>
+<p align="center">
+  <a href="img/3-agent-1.png"><img src="img/3-agent-1.png" alt="Agent 列表" width="400" /></a>
+  <a href="img/3-agent-2.png"><img src="img/3-agent-2.png" alt="Agent 安装与卸载命令" width="400" /></a>
+</p>
+</details>
+
+<details>
+<summary>客户端节点</summary>
+<p align="center">
+  <a href="img/4-客户端-1.png"><img src="img/4-客户端-1.png" alt="客户端节点列表" width="400" /></a>
+  <a href="img/4-客户端-2.png"><img src="img/4-客户端-2.png" alt="隧道与访问端" width="400" /></a>
+  <a href="img/4-客户端-3.png"><img src="img/4-客户端-3.png" alt="新增隧道" width="400" /></a>
+  <a href="img/4-客户端-4.png"><img src="img/4-客户端-4.png" alt="frpc 配置预览" width="400" /></a>
+  <a href="img/4-客户端-5.png"><img src="img/4-客户端-5.png" alt="客户端配置历史" width="400" /></a>
+</p>
+</details>
+
+<details>
+<summary>设置</summary>
+<p align="center">
+  <a href="img/5-设置-1.png"><img src="img/5-设置-1.png" alt="frp 二进制设置" width="400" /></a>
+</p>
+</details>
+
+<details>
+<summary>Agent 安装</summary>
+<p align="center">
+  <a href="img/6-安装-1.png"><img src="img/6-安装-1.png" alt="Windows Agent 安装与日志" width="400" /></a>
+  <a href="img/6-安装-2.png"><img src="img/6-安装-2.png" alt="Linux Agent 安装" width="400" /></a>
+</p>
+</details>
 
 ## 主要功能
 
@@ -136,7 +187,7 @@ Agent 的启动、注册与连接日志保存在各实例数据目录的 `agent.
 ```
 
 Windows 使用 `.\build.ps1 -AgentBundle`。直接运行面板二进制而不使用部署脚本时，先用 `dfpanel -prepare-agent-bundle <包路径> <数据目录>` 校验并准备，再用 `dfpanel -activate-agent-bundle <数据目录> <面板版本>` 激活。旧版手动放在数据目录 `bin/` 的文件仍可读取；Docker 镜像内置的 Agent 优先，避免旧文件遮盖新镜像。
-本地二进制部署可将生成的包传给 `deploy-panel.sh --agent-bundle <包路径>` 或 `deploy-panel.ps1 -AgentBundle <包路径>`。包名使用面板发布版本，包内清单独立记录 `VERSION.agent`；面板 `beta.19` 可分发 Agent `beta.18`。
+本地二进制部署可将生成的包传给 `deploy-panel.sh --agent-bundle <包路径>` 或 `deploy-panel.ps1 -AgentBundle <包路径>`。包名使用面板发布版本，包内清单独立记录 `VERSION.agent`；面板与 Agent 可以独立确定版本。
 
 若安装脚本返回 404，请先确认面板已更新并已准备 Agent 全平台包；详细说明见 [Agent 部署文档](docs/agent-架构与部署.md)。
 
@@ -178,8 +229,8 @@ Windows（管理员 PowerShell）：
 
 ```powershell
 Invoke-WebRequest -Uri 'http://<面板地址>:7226/install.ps1' -OutFile .\install.ps1
-.\install.ps1 -Uninstall -Instance <安装时的 nodeKey>
-# 确定不再需要该 Agent 数据时：.\install.ps1 -Uninstall -Instance <安装时的 nodeKey> -Purge
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall -Instance <安装时的 nodeKey>
+# 确定不再需要该 Agent 数据时，在命令末尾加 -Purge
 ```
 
 Agent 卸载脚本会停止其托管的 frp 实例并注销系统服务或计划任务。卸载后，可在面板的「Agent 管理」中删除对应记录。
@@ -199,4 +250,4 @@ Agent 卸载脚本会停止其托管的 frp 实例并注销系统服务或计划
 
 ## 项目支持
 
-本项目由 **WorkBuddy** 支持。使用问题和功能建议可通过 [GitHub Issues](https://github.com/dreamstation625/DFPanel/issues) 提交。
+本项目由 **WorkBuddy** 和 **ChatGPT** 支持。使用问题和功能建议可通过 [GitHub Issues](https://github.com/dreamstation625/DFPanel/issues) 提交。
