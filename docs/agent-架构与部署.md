@@ -199,6 +199,8 @@ powershell -ExecutionPolicy Bypass -Command "irm http://<panel>:7226/install.ps1
 
 Windows 下 Docker 模式尚未验证；安装命令页面仅提供进程模式，接口也会拒绝 Windows 的 Docker 运行时请求。
 
+Agent 自身的启动、注册与面板连接日志保存在每个实例数据目录的 `agent.log`（单文件最多 10 MiB，另保留 `agent.log.1`、`agent.log.2`）。Windows 脚本安装后可在 `%ProgramData%\dfpanel-agent\<nodeKey>\data\agent.log` 查看，例如执行 `Get-Content -LiteralPath "$env:ProgramData\dfpanel-agent\<nodeKey>\data\agent.log" -Tail 50`。Linux 脚本的数据目录是 `/var/lib/dfpanel-agent/<nodeKey>/`；frps / frpc 子进程日志仍分别写入 `frps-<id>.log` / `frpc-<id>.log`。
+
 分发端点：
 
 | 端点 | 说明 |

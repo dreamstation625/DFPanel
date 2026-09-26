@@ -237,7 +237,7 @@ elif [[ "$OS" == "darwin" ]]; then
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>$DATA_DIR/agent.log</string>
+  <key>StandardOutPath</key><string>$DATA_DIR/agent.stdout.log</string>
   <key>StandardErrorPath</key><string>$DATA_DIR/agent.err.log</string>
 </dict>
 </plist>
@@ -248,6 +248,7 @@ EOF
 else
   echo "==> 未检测到 systemd，直接后台启动"
   pkill -f "$INSTALL_DIR/dfpanel-agent" >/dev/null 2>&1 || true
-  nohup "$INSTALL_DIR/dfpanel-agent" --config "$CONF_DIR/agent.json" >>"$DATA_DIR/agent.log" 2>&1 &
+  nohup "$INSTALL_DIR/dfpanel-agent" --config "$CONF_DIR/agent.json" >>"$DATA_DIR/agent.stdio.log" 2>&1 &
   echo "==> 安装完成"
 fi
+echo "==> Agent 日志：$DATA_DIR/agent.log"

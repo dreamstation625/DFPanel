@@ -123,6 +123,10 @@ Compose 示例默认使用 Linux host 网络。Agent 数据默认保存在 Compo
 
 首次访问面板完成初始化。安装远端 Agent 时，使用「Agent 管理 → 安装命令」生成的命令：Linux / macOS 脚本注册系统服务，Windows 脚本注册开机启动的计划任务。Windows 下 Docker 模式尚未验证，安装界面只提供进程模式。安装命令包含 Agent 密钥，请在目标机器上执行并妥善保管。
 
+Agent 的启动、注册与连接日志保存在各实例数据目录的 `agent.log`。Windows 一键安装后的路径为 `%ProgramData%\dfpanel-agent\<nodeKey>\data\agent.log`，安装脚本也会打印该路径；遇到 Agent 身份已被其它安装实例使用时，可先查看这里的注册失败原因。
+
+「Agent 管理 → 安装命令」同时提供对应的卸载命令。卸载会停止本地 Agent 与托管的 frp，默认保留数据目录及日志；面板中的 Agent 记录需单独删除。
+
 使用本次更新构建的 Docker 面板镜像已内置 Linux、Windows 和 macOS 安装脚本支持的 Agent 二进制，直接执行「Agent 管理 → 安装命令」即可。Agent 版本取自镜像构建时的 `VERSION.agent`；升级时拉取新面板镜像并重新创建容器。
 
 通过 `deploy-panel.sh` 或 `deploy-panel.ps1` 安装的二进制面板会自动准备七种平台的 Agent：Linux amd64、arm64、arm，Windows amd64、386，以及 macOS amd64、arm64。需要本地包时，可运行：

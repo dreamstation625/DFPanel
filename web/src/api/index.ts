@@ -417,6 +417,9 @@ export interface InstallCommands {
   binary: string
   docker: string
   compose: string
+  uninstallBinary: string
+  uninstallDocker: string
+  uninstallCompose: string
 }
 
 /** Agent 指令历史 */

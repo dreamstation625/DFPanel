@@ -198,6 +198,17 @@ func TestInstallCommandsCarryFrpVersion(t *testing.T) {
 	if strings.Contains(res.Compose, "DFPANEL_HOST_DATA_DIR") {
 		t.Errorf("compose 不该出现宿主数据目录（容器内的文件用 docker cp 送）：%s", res.Compose)
 	}
+	if !strings.Contains(res.UninstallBinary, "--uninstall --instance KEY") || strings.Contains(res.UninstallBinary, "SECRET") {
+		t.Errorf("Linux 卸载命令应定位实例且不包含签名密钥：%s", res.UninstallBinary)
+	}
+	if !strings.Contains(res.UninstallDocker, "docker rm -f dfpanel-agent-KEY") ||
+		!strings.Contains(res.UninstallDocker, "/opt/dfpanel-agent/KEY/frp[sc]-*.json") {
+		t.Errorf("docker run 卸载命令应清理 Agent 及其托管容器：%s", res.UninstallDocker)
+	}
+	if !strings.Contains(res.UninstallCompose, "docker compose -p dfpanel-agent-KEY -f docker-compose.agent.yml down") ||
+		!strings.Contains(res.UninstallCompose, "./dfpanel-agent-data/KEY/frp[sc]-*.json") {
+		t.Errorf("Compose 卸载命令应在对应项目中清理实例：%s", res.UninstallCompose)
+	}
 
 	winRes := h.buildInstallCommands("http://panel:7226", a, "windows", "process")
 	if !strings.Contains(winRes.Binary, "-FrpVersion 0.71.0") {
@@ -205,6 +216,10 @@ func TestInstallCommandsCarryFrpVersion(t *testing.T) {
 	}
 	if winRes.Docker != "" || winRes.Compose != "" {
 		t.Errorf("Windows 安装命令不应提供未经验证的 Docker 模式：%+v", winRes)
+	}
+	if !strings.Contains(winRes.UninstallBinary, "-Uninstall -Instance KEY") ||
+		strings.Contains(winRes.UninstallBinary, "SECRET") || winRes.UninstallDocker != "" || winRes.UninstallCompose != "" {
+		t.Errorf("Windows 应只提供不含密钥的脚本卸载命令：%+v", winRes)
 	}
 
 	// 没设期望版本（不管理）时不该硬塞参数进去

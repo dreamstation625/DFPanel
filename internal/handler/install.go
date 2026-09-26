@@ -32,13 +32,16 @@ func NewInstallHandler(cfg *config.Config) *InstallHandler {
 
 // installCommands 生成结果：同时给出二进制与 Docker 两种形态，前端按需要展示
 type installCommands struct {
-	PanelURL string `json:"panelUrl"`
-	NodeKey  string `json:"nodeKey"`
-	Secret   string `json:"secret"`
-	Roles    string `json:"roles"`
-	Binary   string `json:"binary"`
-	Docker   string `json:"docker"`
-	Compose  string `json:"compose"`
+	PanelURL         string `json:"panelUrl"`
+	NodeKey          string `json:"nodeKey"`
+	Secret           string `json:"secret"`
+	Roles            string `json:"roles"`
+	Binary           string `json:"binary"`
+	Docker           string `json:"docker"`
+	Compose          string `json:"compose"`
+	UninstallBinary  string `json:"uninstallBinary"`
+	UninstallDocker  string `json:"uninstallDocker"`
+	UninstallCompose string `json:"uninstallCompose"`
 }
 
 // AgentInstallCommand GET /api/agents/:id/install-command 生成某 Agent 的一键安装命令
@@ -246,9 +249,12 @@ func (h *InstallHandler) buildInstallCommands(panelURL string, agent *model.Agen
 		Roles:    roles,
 	}
 	res.Binary = binaryInstallCommand(panelURL, agent, osName, roles, runtime)
+	res.UninstallBinary = binaryUninstallCommand(panelURL, agent.NodeKey, osName)
 	if !strings.HasPrefix(osName, "win") {
 		res.Docker = dockerRunCommand(panelURL, agent, roles, runtime, image)
 		res.Compose = dockerComposeSnippet(panelURL, agent, roles, runtime, image)
+		res.UninstallDocker = dockerUninstallCommand(agent.NodeKey, agentDataHostDir+"/"+agent.NodeKey)
+		res.UninstallCompose = dockerComposeUninstallCommand(agent.NodeKey)
 	}
 	return res
 }
@@ -290,6 +296,28 @@ func binaryInstallCommand(panelURL string, agent *model.Agent, osName, roles, ru
 		}
 		return fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- %s", panelURL, args)
 	}
+}
+
+// binaryUninstallCommand 只需安装实例标识；不把签名密钥放进卸载命令。
+func binaryUninstallCommand(panelURL, nodeKey, osName string) string {
+	if strings.HasPrefix(osName, "win") {
+		return fmt.Sprintf("powershell -ExecutionPolicy Bypass -Command \"irm %s/install.ps1 -OutFile install.ps1; .\\install.ps1 -Uninstall -Instance %s\"", panelURL, nodeKey)
+	}
+	return fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- --uninstall --instance %s", panelURL, nodeKey)
+}
+
+// Docker 运行时的 frp 由 Agent 单独创建，移除 Agent 容器后再按该实例的数据目录清理。
+func dockerUninstallCommand(nodeKey, dataDir string) string {
+	return fmt.Sprintf("docker rm -f dfpanel-agent-%s\n%s", nodeKey, dockerManagedFRPCleanup(dataDir))
+}
+
+func dockerComposeUninstallCommand(nodeKey string) string {
+	return fmt.Sprintf("docker compose -p dfpanel-agent-%s -f docker-compose.agent.yml down\n%s", nodeKey,
+		dockerManagedFRPCleanup(agentComposeDataDir+"/"+nodeKey))
+}
+
+func dockerManagedFRPCleanup(dataDir string) string {
+	return fmt.Sprintf("for config in %s/frp[sc]-*.json; do\n  [ -f \"$config\" ] || continue\n  docker rm -f \"dfpanel-$(basename \"$config\" .json)\" 2>/dev/null || true\ndone", dataDir)
 }
 
 // docker run 使用宿主机绝对路径；Compose 则把数据放在 Compose 文件旁的独立子目录。

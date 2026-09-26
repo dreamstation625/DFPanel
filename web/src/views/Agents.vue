@@ -130,6 +130,14 @@ const currentCommand = computed(() => {
   return c.compose
 })
 
+const currentUninstallCommand = computed(() => {
+  const c = installCmds.value
+  if (!c) return ''
+  if (installMode.value === 'binary') return c.uninstallBinary
+  if (installMode.value === 'docker') return c.uninstallDocker
+  return c.uninstallCompose
+})
+
 function fmtTime(v?: string | null) {
   if (!v) return '—'
   return new Date(v).toLocaleString()
@@ -221,10 +229,8 @@ function onInstallOSChange() {
   void loadInstall()
 }
 
-/** 进程模式只给一键脚本：Agent 装成宿主机二进制，frp 也是子进程，没有容器什么事 */
 function onRuntimeChange() {
   if (installOS.value === 'windows') installRuntime.value = 'process'
-  if (installRuntime.value === 'process') installMode.value = 'binary'
   void loadInstall()
 }
 
@@ -470,20 +476,27 @@ onUnmounted(() => {
           </el-radio-group>
         </div>
 
-        <el-tabs v-if="installOS !== 'windows' && installRuntime === 'docker'" v-model="installMode">
+        <el-tabs v-if="installOS !== 'windows'" v-model="installMode">
           <el-tab-pane label="一键脚本" name="binary" />
           <el-tab-pane label="docker run" name="docker" />
           <el-tab-pane label="docker compose" name="compose" />
         </el-tabs>
 
+        <div class="command-heading">安装命令</div>
         <pre class="code-block">{{ currentCommand }}</pre>
         <div class="hint-line">
-          <span v-if="installRuntime === 'docker' && installMode !== 'binary'">
-            Agent 从面板获取 frp 二进制；Docker 运行时还需挂载 /var/run/docker.sock。
-          </span>
+          <span v-if="installMode === 'compose'">将上方内容保存为 docker-compose.agent.yml，在该文件目录执行 docker compose -p dfpanel-agent-{{ installTarget.nodeKey }} -f docker-compose.agent.yml up -d。<template v-if="installRuntime === 'docker'">frp Docker 运行时还需挂载 /var/run/docker.sock。</template></span>
+          <span v-else-if="installMode === 'docker' && installRuntime === 'docker'">Agent 从面板获取 frp 二进制；Docker 运行时还需挂载 /var/run/docker.sock。</span>
+          <span v-else-if="installMode === 'docker'">Agent 容器中的 frp 由进程模式运行，日志位于挂载的数据目录。</span>
           <span v-else-if="installOS === 'windows'">Windows Docker 模式尚未验证；请使用进程模式，安装脚本会注册开机启动的计划任务。</span>
           <span v-else>自动注册 systemd / launchd 并开机自启。</span>
         </div>
+        <div class="command-heading uninstall-heading">
+          <span>卸载命令</span>
+          <el-button link type="primary" :disabled="!currentUninstallCommand" @click="copy(currentUninstallCommand)">复制卸载命令</el-button>
+        </div>
+        <pre class="code-block">{{ currentUninstallCommand }}</pre>
+        <div class="hint-line">卸载会停止 Agent 及其托管的 frp；默认保留数据目录和日志，本地卸载不会删除面板中的 Agent 记录。Compose 命令需在保存配置的目录执行。</div>
       </div>
       <template #footer>
         <el-button @click="installVisible = false">关闭</el-button>
@@ -565,6 +578,18 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   margin-bottom: 4px;
+}
+
+.command-heading {
+  font-weight: 600;
+  margin: 8px 0;
+}
+
+.uninstall-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 18px;
 }
 
 .hint-line {

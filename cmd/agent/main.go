@@ -6,6 +6,7 @@ package main
 
 import (
 	"flag"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -28,6 +29,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载配置失败：%v", err)
 	}
+	logFile, err := openAgentLog(cfg.DataDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer logFile.Close()
+	// 先写文件；计划任务没有可用标准错误句柄时，也不能丢失本地日志。
+	log.SetOutput(io.MultiWriter(logFile, os.Stderr))
+	log.Printf("dfpanel-agent %s 启动；日志：%s", agent.Version, logFile.path)
 
 	// 收到终止信号时直接退出：容器形态交给 restart policy，系统服务交给 systemd / 计划任务
 	sigCh := make(chan os.Signal, 1)

@@ -171,3 +171,5 @@ Start-ScheduledTask -TaskName $TaskName
 
 Write-Host "==> 安装完成，任务状态："
 Get-ScheduledTask -TaskName $TaskName | Select-Object TaskName, State | Format-Table -AutoSize
+Write-Host "==> Agent 日志：$(Join-Path $DataDir 'agent.log')"
+Write-Host "    查看最近日志：Get-Content -LiteralPath '$(Join-Path $DataDir 'agent.log')' -Tail 50"
