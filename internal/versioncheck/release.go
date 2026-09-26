@@ -2,10 +2,12 @@ package versioncheck
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -13,9 +15,9 @@ import (
 )
 
 const (
-	releaseAPI = "https://api.github.com/repos/dreamstation625/DFPanel/releases?per_page=100"
-	rawBase    = "https://raw.githubusercontent.com/dreamstation625/DFPanel"
-	releaseURL = "https://github.com/dreamstation625/DFPanel/releases/tag/"
+	releaseAPI   = "https://api.github.com/repos/dreamstation625/DFPanel/releases?per_page=100"
+	agentFileAPI = "https://api.github.com/repos/dreamstation625/DFPanel/contents/VERSION.agent"
+	releaseURL   = "https://github.com/dreamstation625/DFPanel/releases/tag/"
 )
 
 // Published 是一个检测通道的最新版本。Agent 版本从发布 tag 的 VERSION.agent 读取。
@@ -35,18 +37,18 @@ type Latest struct {
 }
 
 type Client struct {
-	httpClient *http.Client
-	apiURL     string
-	rawURL     string
-	mu         sync.Mutex
-	cached     Latest
-	cachedErr  error
-	cachedAt   time.Time
-	fetching   bool
+	httpClient   *http.Client
+	apiURL       string
+	agentFileURL string
+	mu           sync.Mutex
+	cached       Latest
+	cachedErr    error
+	cachedAt     time.Time
+	fetching     bool
 }
 
 func NewClient() *Client {
-	return &Client{httpClient: &http.Client{Timeout: 15 * time.Second}, apiURL: releaseAPI, rawURL: rawBase}
+	return &Client{httpClient: &http.Client{Timeout: 15 * time.Second}, apiURL: releaseAPI, agentFileURL: agentFileAPI}
 }
 
 var Default = NewClient()
@@ -179,12 +181,13 @@ func (client *Client) fetch(ctx context.Context) (Latest, error) {
 
 // agentVersion 读取指定发布 tag 的独立 Agent 版本；文件不存在时按构建脚本回退到面板版本。
 func (client *Client) agentVersion(ctx context.Context, tag, fallback string) (string, string) {
-	agentURL := strings.TrimRight(client.rawURL, "/") + "/" + tag + "/VERSION.agent"
+	agentURL := client.agentFileURL + "?ref=" + url.QueryEscape(tag)
 	agentReq, err := http.NewRequestWithContext(ctx, http.MethodGet, agentURL, nil)
 	if err != nil {
 		return "", err.Error()
 	}
 	agentReq.Header.Set("User-Agent", "DFPanel-version-check")
+	agentReq.Header.Set("Accept", "application/vnd.github+json")
 	agentResp, err := client.httpClient.Do(agentReq)
 	if err != nil {
 		return "", fmt.Sprintf("查询 Agent 发布版本失败：%v", err)
@@ -196,9 +199,19 @@ func (client *Client) agentVersion(ctx context.Context, tag, fallback string) (s
 	if agentResp.StatusCode != http.StatusOK {
 		return "", fmt.Sprintf("查询 Agent 发布版本失败：HTTP %d", agentResp.StatusCode)
 	}
-	content, err := io.ReadAll(io.LimitReader(agentResp.Body, 256))
-	if err != nil {
+	var file struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := json.NewDecoder(io.LimitReader(agentResp.Body, 4096)).Decode(&file); err != nil {
 		return "", fmt.Sprintf("读取 Agent 发布版本失败：%v", err)
+	}
+	if file.Encoding != "base64" {
+		return "", "发布文件 VERSION.agent 的编码不受支持"
+	}
+	content, err := base64.StdEncoding.DecodeString(file.Content)
+	if err != nil {
+		return "", fmt.Sprintf("解析 Agent 发布版本失败：%v", err)
 	}
 	agentVersion := strings.TrimSpace(string(content))
 	if _, valid := Compare(agentVersion, agentVersion); !valid {

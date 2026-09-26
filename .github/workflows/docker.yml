@@ -155,8 +155,6 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            type=ref,event=tag
-            type=semver,pattern={{version}}
             type=raw,value=${{ needs.verify.outputs.version }}
             type=raw,value=latest,enable=${{ needs.verify.outputs.latest }}
           labels: |
@@ -231,8 +229,6 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            type=ref,event=tag
-            type=semver,pattern={{version}}
             type=raw,value=${{ needs.verify.outputs.agent_version }}
             type=raw,value=latest,enable=${{ needs.verify.outputs.latest }}
           labels: |

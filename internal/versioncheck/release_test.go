@@ -2,6 +2,8 @@ package versioncheck
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +12,11 @@ import (
 	"testing"
 	"time"
 )
+
+func writeAgentVersion(w http.ResponseWriter, version string) {
+	content := base64.StdEncoding.EncodeToString([]byte(version + "\n"))
+	_, _ = fmt.Fprintf(w, `{"encoding":"base64","content":%q}`, content)
+}
 
 func TestSnapshotReturnsWhileReleaseRequestIsSlow(t *testing.T) {
 	releaseGate := make(chan struct{})
@@ -27,7 +34,7 @@ func TestSnapshotReturnsWhileReleaseRequestIsSlow(t *testing.T) {
 	}))
 	defer server.Close()
 	defer release()
-	client := &Client{httpClient: server.Client(), apiURL: server.URL + "/releases", rawURL: server.URL + "/raw"}
+	client := &Client{httpClient: server.Client(), apiURL: server.URL + "/releases", agentFileURL: server.URL + "/contents/VERSION.agent"}
 
 	returned := make(chan bool, 1)
 	go func() {
@@ -73,16 +80,21 @@ func TestReleaseCheckUsesIndependentAgentVersionAndCache(t *testing.T) {
 		case "/releases":
 			releaseRequests.Add(1)
 			_, _ = w.Write([]byte(`[{"tag_name":"v0.0.1-beta.17"},{"tag_name":"v0.0.1"},{"tag_name":"v0.0.2-beta.1"},{"tag_name":"v1.0.0","draft":true}]`))
-		case "/raw/v0.0.2-beta.1/VERSION.agent":
-			_, _ = w.Write([]byte("0.0.2-beta.1\n"))
-		case "/raw/v0.0.1/VERSION.agent":
-			_, _ = w.Write([]byte("0.0.1\n"))
+		case "/contents/VERSION.agent":
+			switch r.URL.Query().Get("ref") {
+			case "v0.0.2-beta.1":
+				writeAgentVersion(w, "0.0.2-beta.1")
+			case "v0.0.1":
+				writeAgentVersion(w, "0.0.1")
+			default:
+				http.NotFound(w, r)
+			}
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
-	client := &Client{httpClient: server.Client(), apiURL: server.URL + "/releases", rawURL: server.URL + "/raw"}
+	client := &Client{httpClient: server.Client(), apiURL: server.URL + "/releases", agentFileURL: server.URL + "/contents/VERSION.agent"}
 	result, err := client.Check(context.Background(), false)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +120,7 @@ func TestReleaseCheckMissingAgentFileFollowsBuildFallback(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	defer server.Close()
-	client := &Client{httpClient: server.Client(), apiURL: server.URL + "/releases", rawURL: server.URL + "/raw"}
+	client := &Client{httpClient: server.Client(), apiURL: server.URL + "/releases", agentFileURL: server.URL + "/contents/VERSION.agent"}
 	result, err := client.Check(context.Background(), false)
 	if err != nil || result.Any.AgentVersion != "1.2.3" || result.Stable.AgentVersion != "1.2.3" {
 		t.Fatalf("缺少 VERSION.agent 时未按构建规则回退：结果=%+v，错误=%v", result, err)
@@ -120,16 +132,21 @@ func TestStableAgentSkipsPrereleaseVersion(t *testing.T) {
 		switch r.URL.Path {
 		case "/releases":
 			_, _ = w.Write([]byte(`[{"tag_name":"v0.0.2"},{"tag_name":"v0.0.1"}]`))
-		case "/raw/v0.0.2/VERSION.agent":
-			_, _ = w.Write([]byte("0.0.3-beta.1"))
-		case "/raw/v0.0.1/VERSION.agent":
-			_, _ = w.Write([]byte("0.0.1"))
+		case "/contents/VERSION.agent":
+			switch r.URL.Query().Get("ref") {
+			case "v0.0.2":
+				writeAgentVersion(w, "0.0.3-beta.1")
+			case "v0.0.1":
+				writeAgentVersion(w, "0.0.1")
+			default:
+				http.NotFound(w, r)
+			}
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
-	client := &Client{httpClient: server.Client(), apiURL: server.URL + "/releases", rawURL: server.URL + "/raw"}
+	client := &Client{httpClient: server.Client(), apiURL: server.URL + "/releases", agentFileURL: server.URL + "/contents/VERSION.agent"}
 	result, err := client.Check(context.Background(), false)
 	if err != nil || result.Stable.AgentVersion != "0.0.1" ||
 		!strings.HasSuffix(result.Stable.AgentReleaseURL, "/v0.0.1") {
