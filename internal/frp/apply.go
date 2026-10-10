@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"dfpanel/internal/distrib"
 )
 
 type ApplyResult struct {
@@ -32,6 +34,10 @@ func (m *Manager) Apply(id uint, content, mode string) ApplyResult {
 	old, readErr := os.ReadFile(path)
 	if readErr != nil && !os.IsNotExist(readErr) {
 		return ApplyResult{Message: "读取原配置失败：" + readErr.Error(), Running: wasRunning}
+	}
+	// 校验会先于 start 执行，旧文件缺少执行位时同样需要修复权限。
+	if err := distrib.EnsureExecutable(m.BinPath()); err != nil {
+		return ApplyResult{Message: "frps 二进制不可用，已保持原配置：" + err.Error(), Running: wasRunning}
 	}
 	tmp, err := os.CreateTemp(m.dataDir, ".frps-verify-*.json")
 	if err != nil {
@@ -56,7 +62,7 @@ func (m *Manager) Apply(id uint, content, mode string) ApplyResult {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, m.BinPath(), "verify", "-c", tmpPath).CombinedOutput()
 	if err != nil {
-		return ApplyResult{Message: "配置校验失败，已保持原配置：" + strings.TrimSpace(string(out)) + " " + err.Error(), Running: wasRunning}
+		return ApplyResult{Message: "配置校验失败，已保持原配置：" + strings.TrimSpace(string(out)) + " " + err.Error() + distrib.ExecHint(err), Running: wasRunning}
 	}
 	if readErr == nil {
 		if err := atomicConfig(path+".bak", string(old)); err != nil {
