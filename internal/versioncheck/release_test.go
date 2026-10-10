@@ -79,7 +79,7 @@ func TestReleaseCheckUsesIndependentAgentVersionAndCache(t *testing.T) {
 		switch r.URL.Path {
 		case "/releases":
 			releaseRequests.Add(1)
-			_, _ = w.Write([]byte(`[{"tag_name":"v0.0.1-beta.17"},{"tag_name":"v0.0.1"},{"tag_name":"v0.0.2-beta.1"},{"tag_name":"v1.0.0","draft":true}]`))
+			_, _ = w.Write([]byte(`[{"tag_name":"v0.0.1-beta.17"},{"tag_name":"v0.0.1","body":"正式版说明","published_at":"2026-10-01T00:00:00Z"},{"tag_name":"v0.0.2-beta.1","name":"预发布说明","body":"> [!WARNING]\n> 同步升级两端","published_at":"2026-10-10T00:00:00Z"},{"tag_name":"v1.0.0","draft":true}]`))
 		case "/contents/VERSION.agent":
 			switch r.URL.Query().Get("ref") {
 			case "v0.0.2-beta.1":
@@ -105,6 +105,13 @@ func TestReleaseCheckUsesIndependentAgentVersionAndCache(t *testing.T) {
 	}
 	if !strings.HasSuffix(result.Any.ReleaseURL, "/v0.0.2-beta.1") || !strings.HasSuffix(result.Stable.ReleaseURL, "/v0.0.1") {
 		t.Fatalf("Release 地址不正确：%+v", result)
+	}
+	if info := result.Any.Release; info == nil || info.Name != "预发布说明" || info.TagName != "v0.0.2-beta.1" ||
+		info.Body != "> [!WARNING]\n> 同步升级两端" || info.PublishedAt != "2026-10-10T00:00:00Z" || !info.Prerelease {
+		t.Fatalf("预发布说明未跟随选中的版本：%+v", info)
+	}
+	if info := result.Stable.Release; info == nil || info.Name != "v0.0.1" || info.Body != "正式版说明" || info.Prerelease {
+		t.Fatalf("正式版说明混入预发布或未回退标题：%+v", info)
 	}
 	if _, err := client.Check(context.Background(), false); err != nil || releaseRequests.Load() != 1 {
 		t.Fatalf("重复请求未命中缓存：次数=%d，错误=%v", releaseRequests.Load(), err)

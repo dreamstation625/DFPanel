@@ -17,6 +17,12 @@
 
 GitHub Environment `DOCKERHUB` 需要允许 `dev` 分支使用现有凭据；如果此前只允许 `main`，需在仓库设置中加入 `dev`。workflow 不自动修改仓库设置。
 
+## Release 升级说明
+
+版本专用说明保存在 `docs/release-notes/<正式目标版本>.md`。发布时按 `VERSION` 读取，并放在自动生成的更新日志之前；同一目标版本的 `dev` 预发布和 `main` 正式发布共用该说明。没有对应文件的版本只生成更新日志，不会继承旧版本提示。
+
+`0.0.3` 的说明要求面板与所有 Agent 同步升级。修改说明后只影响后续发布流程；已发布的 Release 需要在 GitHub 单独编辑。面板点击“检测版本”会显示所选发布通道的 Release 说明，后台检测和 Agent 检测不会弹窗。
+
 ## 预发布验证
 
 1. 等待 `dev` 对应提交的 Release、Docker 两条 Actions 全部成功。

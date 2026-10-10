@@ -489,6 +489,13 @@ export interface ProgramVersionStatus {
   updateAvailable: boolean
   releaseUrl?: string
   error?: string
+  release?: {
+    name: string
+    tagName: string
+    body: string
+    publishedAt: string
+    prerelease: boolean
+  }
 }
 
 export interface ProgramVersionCheckResult {

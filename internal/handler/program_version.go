@@ -12,12 +12,13 @@ import (
 )
 
 type programVersionStatus struct {
-	Current         string `json:"current"`
-	Latest          string `json:"latest"`
-	State           string `json:"state"` // current / update / ahead / unknown / error
-	UpdateAvailable bool   `json:"updateAvailable"`
-	ReleaseURL      string `json:"releaseUrl,omitempty"`
-	Error           string `json:"error,omitempty"`
+	Current         string                    `json:"current"`
+	Latest          string                    `json:"latest"`
+	State           string                    `json:"state"` // current / update / ahead / unknown / error
+	UpdateAvailable bool                      `json:"updateAvailable"`
+	ReleaseURL      string                    `json:"releaseUrl,omitempty"`
+	Error           string                    `json:"error,omitempty"`
+	Release         *versioncheck.ReleaseInfo `json:"release,omitempty"`
 }
 
 type agentProgramVersionStatus struct {
@@ -71,6 +72,7 @@ func ProgramVersionCheck(cfg *config.Config) gin.HandlerFunc {
 		}
 		panelPublished := publishedFor(panelVersion, latest)
 		panel := compareProgramVersion(panelVersion, panelPublished.PanelVersion, panelPublished.ReleaseURL, panelError)
+		panel.Release = panelPublished.Release
 
 		var agents []model.Agent
 		if err := database.DB.Select("id", "version").Order("id asc").Find(&agents).Error; err != nil {

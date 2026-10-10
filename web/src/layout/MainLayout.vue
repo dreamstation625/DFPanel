@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { authApi, programVersionApi, type ProgramVersionStatus } from '@/api'
 import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
+import ProgramVersionDialog from '@/components/ProgramVersionDialog.vue'
 import { DOC_MENU } from '@/utils/docs'
 
 const route = useRoute()
@@ -17,8 +18,11 @@ const passwordDialogVisible = ref(false)
 const panelVersion = ref('')
 const versionCheck = ref<ProgramVersionStatus | null>(null)
 const checkingVersion = ref(false)
+const versionDialogVisible = ref(false)
+const versionCheckedAt = ref('')
 let versionPoll: ReturnType<typeof setTimeout> | undefined
 let mounted = false
+let versionRequestPending = false
 const versionLabel = computed(() => {
   const v = panelVersion.value
   if (!v) return ''
@@ -37,20 +41,30 @@ async function loadPanelVersion() {
 }
 
 async function checkVersion(refresh = false) {
+  if (versionRequestPending) return
+  versionRequestPending = true
   if (versionPoll) clearTimeout(versionPoll)
   checkingVersion.value = true
   try {
     const result = await programVersionApi.check(refresh)
     if (!mounted) return
     versionCheck.value = result.panel
+    versionCheckedAt.value = result.checkedAt
     if (!panelVersion.value) panelVersion.value = result.panel.current
     checkingVersion.value = result.checking
     if (result.checking) versionPoll = setTimeout(() => void checkVersion(), 2000)
   } catch {
     if (!mounted) return
-    versionCheck.value = { current: panelVersion.value, latest: '', state: 'error', updateAvailable: false, error: '无法连接面板版本检测接口' }
+    versionCheck.value = { ...versionCheck.value, current: panelVersion.value, latest: versionCheck.value?.latest || '', state: 'error', updateAvailable: false, error: '无法连接面板版本检测接口' }
     checkingVersion.value = false
+  } finally {
+    versionRequestPending = false
   }
+}
+
+function showVersionDialog() {
+  versionDialogVisible.value = true
+  void checkVersion(true)
 }
 
 onMounted(() => {
@@ -143,7 +157,7 @@ function onPasswordChanged() {
         <div v-else-if="versionCheck?.state === 'current'" class="check-current">已是最新</div>
         <div v-else-if="versionCheck?.state === 'ahead'" class="check-current">高于发布版</div>
         <div v-else-if="versionCheck?.state === 'unknown'" class="check-error">版本未知</div>
-        <el-button link size="small" :loading="checkingVersion" @click="checkVersion(true)">检测版本</el-button>
+        <el-button link size="small" @click="showVersionDialog">检测版本</el-button>
       </div>
     </el-aside>
 
@@ -170,6 +184,7 @@ function onPasswordChanged() {
       </el-main>
     </el-container>
     <ChangePasswordDialog v-model="passwordDialogVisible" @changed="onPasswordChanged" />
+    <ProgramVersionDialog v-model="versionDialogVisible" :status="versionCheck" :checking="checkingVersion" :checked-at="versionCheckedAt" @refresh="checkVersion(true)" />
   </el-container>
 </template>
 

@@ -28,6 +28,16 @@ type Published struct {
 	ReleaseURL      string
 	AgentReleaseURL string
 	AgentError      string
+	Release         *ReleaseInfo
+}
+
+// ReleaseInfo 来自同一次 Releases 查询，与选中的面板版本一起缓存。
+type ReleaseInfo struct {
+	Name        string `json:"name"`
+	TagName     string `json:"tagName"`
+	Body        string `json:"body"`
+	PublishedAt string `json:"publishedAt"`
+	Prerelease  bool   `json:"prerelease"`
 }
 
 // Latest 分别保留全部发布和正式发布，运行正式版时只使用 Stable。
@@ -114,13 +124,19 @@ func (client *Client) fetch(ctx context.Context) (Latest, error) {
 		return Latest{}, fmt.Errorf("查询 GitHub Releases 失败：HTTP %d", resp.StatusCode)
 	}
 	var releases []struct {
-		TagName string `json:"tag_name"`
-		Draft   bool   `json:"draft"`
+		TagName     string `json:"tag_name"`
+		Draft       bool   `json:"draft"`
+		Name        string `json:"name"`
+		Body        string `json:"body"`
+		PublishedAt string `json:"published_at"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&releases); err != nil {
 		return Latest{}, fmt.Errorf("解析 GitHub Releases 失败：%w", err)
 	}
-	type releaseTag struct{ tag, version string }
+	type releaseTag struct {
+		tag, version string
+		info         ReleaseInfo
+	}
 	var validReleases []releaseTag
 	var stableReleases []releaseTag
 	for _, release := range releases {
@@ -132,7 +148,14 @@ func (client *Client) fetch(ctx context.Context) (Latest, error) {
 		if !valid {
 			continue
 		}
-		item := releaseTag{tag: release.TagName, version: version}
+		name := release.Name
+		if name == "" {
+			name = release.TagName
+		}
+		item := releaseTag{tag: release.TagName, version: version, info: ReleaseInfo{
+			Name: name, TagName: release.TagName, Body: release.Body,
+			PublishedAt: release.PublishedAt, Prerelease: isPre,
+		}}
 		validReleases = append(validReleases, item)
 		if !isPre {
 			stableReleases = append(stableReleases, item)
@@ -151,14 +174,14 @@ func (client *Client) fetch(ctx context.Context) (Latest, error) {
 	})
 	result := Latest{CheckedAt: time.Now()}
 	newest := validReleases[0]
-	result.Any = Published{PanelVersion: newest.version, ReleaseURL: releaseURL + newest.tag}
+	result.Any = Published{PanelVersion: newest.version, ReleaseURL: releaseURL + newest.tag, Release: &newest.info}
 	result.Any.AgentVersion, result.Any.AgentError = client.agentVersion(ctx, newest.tag, newest.version)
 	result.Any.AgentReleaseURL = result.Any.ReleaseURL
 	if len(stableReleases) == 0 {
 		return result, nil
 	}
 	stable := stableReleases[0]
-	result.Stable = Published{PanelVersion: stable.version, ReleaseURL: releaseURL + stable.tag}
+	result.Stable = Published{PanelVersion: stable.version, ReleaseURL: releaseURL + stable.tag, Release: &stable.info}
 	for _, candidate := range stableReleases {
 		agentVersion, agentError := "", ""
 		if candidate.tag == newest.tag {

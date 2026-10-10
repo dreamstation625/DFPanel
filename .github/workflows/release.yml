@@ -83,6 +83,10 @@ jobs:
         working-directory: web
         run: npm run type-check
 
+      - name: 发布说明渲染检查
+        working-directory: web
+        run: npm run test:release
+
       - name: 编译前端
         working-directory: web
         run: npm run build
@@ -216,6 +220,21 @@ jobs:
     needs: [verify, build, agent_bundle]
     runs-on: ubuntu-latest
     steps:
+      - name: 检出发布说明
+        uses: actions/checkout@v4
+
+      - name: 读取目标版本的升级说明
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          NOTES="docs/release-notes/${VERSION}.md"
+          # dev 和 main 共用目标版本的说明，后续版本不会继承旧提示。
+          if [ -f "$NOTES" ]; then
+            cp "$NOTES" release-body.md
+          else
+            : > release-body.md
+          fi
+
       - name: 下载全部产物
         uses: actions/download-artifact@v4
         with:
@@ -248,6 +267,8 @@ jobs:
           prerelease: ${{ needs.verify.outputs.prerelease }}
           # 依据上一个 Release 之间的提交自动生成更新日志
           generate_release_notes: true
+          # 升级说明放在自动生成的更新日志之前。
+          body_path: release-body.md
           files: |
             assets/*.tar.gz
             assets/*.zip
