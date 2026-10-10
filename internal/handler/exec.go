@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gorm.io/gorm"
+	"sync"
 	"time"
 
 	"dfpanel/internal/agenthub"
@@ -43,10 +45,21 @@ func dispatch(hub *agenthub.Hub, cmd *model.AgentCommand) (dispatchResult, error
 	if cmd.TimeoutMs <= 0 {
 		cmd.TimeoutMs = int(defaultDispatchTimeout.Milliseconds())
 	}
+	cmd.DeliveryVersion = 2
 	if err := database.DB.Create(cmd).Error; err != nil {
 		return dispatchResult{}, fmt.Errorf("创建指令失败：%w", err)
 	}
 
+	if !hub.Online(cmd.AgentID) {
+		return dispatchResult{Queued: true, Message: "Agent 离线，指令已排队，上线后自动执行"}, nil
+	}
+	claimed, err := claimCommand(cmd.AgentID, cmd.ID)
+	if err != nil {
+		return dispatchResult{}, err
+	}
+	if claimed == nil {
+		return dispatchResult{Queued: true, Message: "前序指令仍在处理，本指令已排队"}, nil
+	}
 	data, err := json.Marshal(proto.CommandData{
 		CommandID:  cmd.ID,
 		Type:       cmd.Type,
@@ -71,8 +84,7 @@ func dispatch(hub *agenthub.Hub, cmd *model.AgentCommand) (dispatchResult, error
 		return dispatchResult{Queued: true, Message: "Agent 离线，指令已排队，上线后自动执行"}, nil
 	}
 	if err != nil {
-		markCommand(cmd.ID, "failed", err.Error())
-		return dispatchResult{}, err
+		return dispatchResult{Queued: true, Message: "暂未收到执行结果，指令保留并自动重试"}, nil
 	}
 
 	var rd proto.ResultData
@@ -80,26 +92,10 @@ func dispatch(hub *agenthub.Hub, cmd *model.AgentCommand) (dispatchResult, error
 		return dispatchResult{}, fmt.Errorf("解析 Agent 响应失败：%w", err)
 	}
 
-	status := "done"
+	if err := finishCommand(hub, cmd, rd); err != nil {
+		return dispatchResult{}, err
+	}
 	msg := rd.Message
-	if !rd.OK {
-		status = "failed"
-	}
-	markCommand(cmd.ID, status, msg)
-
-	// WebSocket 同步下发不会走 HTTP report，这里补回配置版本状态
-	if cmd.Type == proto.CmdApply || cmd.Type == proto.CmdRollback {
-		vst := "applied"
-		switch {
-		case rd.RolledBack:
-			vst = "rolled_back"
-		case !rd.OK:
-			vst = "failed"
-		case rd.Unverified:
-			vst = "unverified"
-		}
-		updateVersionStatus(cmd.TargetType, cmd.TargetID, cmd.Version, vst, msg)
-	}
 
 	return dispatchResult{
 		OK:         rd.OK,
@@ -116,37 +112,22 @@ func dispatch(hub *agenthub.Hub, cmd *model.AgentCommand) (dispatchResult, error
 	}, nil
 }
 
-func markCommand(id uint, status, result string) {
-	now := time.Now()
-	_ = database.DB.Model(&model.AgentCommand{}).Where("id = ?", id).
-		Updates(map[string]any{"status": status, "result": result, "done_at": now}).Error
-}
+var versionMu sync.Mutex
 
-// nextVersion 返回目标对象的下一个配置版本号
-func nextVersion(targetType string, targetID uint) int {
-	var last model.ConfigVersion
-	if err := database.DB.Where("target_type = ? AND target_id = ?", targetType, targetID).
-		Order("version desc").First(&last).Error; err != nil {
-		return 1
-	}
-	return last.Version + 1
-}
-
-// recordConfigVersion 落库一份配置快照，作为回滚依据
-func recordConfigVersion(targetType string, targetID uint, version int, content string) *model.ConfigVersion {
-	cv := &model.ConfigVersion{
-		TargetType: targetType,
-		TargetID:   targetID,
-		Version:    version,
-		Checksum:   checksum(content),
-		Content:    content,
-		Status:     "pending",
-		CreatedAt:  time.Now(),
-	}
-	if err := database.DB.Create(cv).Error; err != nil {
-		return cv
-	}
-	return cv
+// recordConfigVersion 在事务内分配版本并保存快照；失败时禁止继续下发。
+func recordConfigVersion(targetType string, targetID uint, content string) (*model.ConfigVersion, error) {
+	versionMu.Lock()
+	defer versionMu.Unlock()
+	cv := &model.ConfigVersion{TargetType: targetType, TargetID: targetID, Content: content, Checksum: checksum(content), Status: "pending", CreatedAt: time.Now()}
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		var last int
+		if err := tx.Model(&model.ConfigVersion{}).Where("target_type = ? AND target_id = ?", targetType, targetID).Select("COALESCE(MAX(version),0)").Scan(&last).Error; err != nil {
+			return err
+		}
+		cv.Version = last + 1
+		return tx.Create(cv).Error
+	})
+	return cv, err
 }
 
 // setConfigVersionStatus 更新配置快照的应用状态

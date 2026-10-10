@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/gin-gonic/gin"
 
@@ -47,7 +50,7 @@ type installCommands struct {
 // AgentInstallCommand GET /api/agents/:id/install-command 生成某 Agent 的一键安装命令
 func (h *InstallHandler) AgentInstallCommand(c *gin.Context) {
 	var agent model.Agent
-	if err := database.DB.First(&agent, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&agent, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Agent 不存在"})
 		return
 	}
@@ -57,13 +60,19 @@ func (h *InstallHandler) AgentInstallCommand(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Windows 下 Docker 模式尚未验证，请使用进程模式"})
 		return
 	}
-	c.JSON(http.StatusOK, h.buildInstallCommands(h.panelURL(c), &agent, osName, runtime))
+	panelURL, err := config.PublicAddress(h.cfg.PublicURL)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, h.buildInstallCommands(panelURL, &agent, osName, runtime))
 }
 
 // NodeInstallCommand GET /api/nodes/:id/install-command 生成节点（frpc）所在 Agent 的安装命令
 func (h *InstallHandler) NodeInstallCommand(c *gin.Context) {
 	var node model.Node
-	if err := database.DB.First(&node, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&node, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
 		return
 	}
@@ -82,7 +91,13 @@ func (h *InstallHandler) NodeInstallCommand(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Windows 下 Docker 模式尚未验证，请使用进程模式"})
 		return
 	}
-	c.JSON(http.StatusOK, h.buildInstallCommands(h.panelURL(c), &agent, osName, runtime))
+	panelURL, err := config.PublicAddress(h.cfg.PublicURL)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, h.buildInstallCommands(panelURL, &agent, osName, runtime))
 }
 
 // ScriptSh GET /install.sh
@@ -218,17 +233,19 @@ func (h *InstallHandler) binDir() string {
 
 // panelURL 面板对外地址：优先取 -public-url，其次按请求推断
 func (h *InstallHandler) panelURL(c *gin.Context) string {
-	if h.cfg != nil && strings.TrimSpace(h.cfg.PublicURL) != "" {
-		return strings.TrimRight(strings.TrimSpace(h.cfg.PublicURL), "/")
+	v, _ := config.PublicAddress(h.cfg.PublicURL)
+	return v
+}
+
+func shArg(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
+func psArg(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+func psCommand(s string) string {
+	words := utf16.Encode([]rune(s))
+	b := make([]byte, len(words)*2)
+	for i, w := range words {
+		binary.LittleEndian.PutUint16(b[i*2:], w)
 	}
-	scheme := "http"
-	if c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
-		scheme = "https"
-	}
-	if host := c.GetHeader("X-Forwarded-Host"); host != "" {
-		return fmt.Sprintf("%s://%s", scheme, host)
-	}
-	return fmt.Sprintf("%s://%s", scheme, c.Request.Host)
+	return "powershell -ExecutionPolicy Bypass -EncodedCommand " + base64.StdEncoding.EncodeToString(b)
 }
 
 // buildInstallCommands 生成二进制 / Docker / Compose 三种安装指令
@@ -282,28 +299,27 @@ func binaryInstallCommand(panelURL string, agent *model.Agent, osName, roles, ru
 	switch {
 	case strings.HasPrefix(osName, "win"):
 		args := fmt.Sprintf("-Panel %s -NodeKey %s -NodeSecret %s -Roles %s -Runtime %s",
-			panelURL, agent.NodeKey, agent.Secret, roles, runtime)
+			psArg(panelURL), psArg(agent.NodeKey), psArg(agent.Secret), psArg(roles), psArg(runtime))
 		if ver != "" {
 			args += " -FrpVersion " + ver
 		}
-		return fmt.Sprintf("powershell -ExecutionPolicy Bypass -Command \"irm %s/install.ps1 -OutFile install.ps1; .\\install.ps1 %s\"",
-			panelURL, args)
+		return psCommand(fmt.Sprintf("irm %s -OutFile install.ps1; .\\install.ps1 %s", psArg(panelURL+"/install.ps1"), args))
 	default:
 		args := fmt.Sprintf("--panel %s --node-key %s --secret %s --roles %s --runtime %s",
-			panelURL, agent.NodeKey, agent.Secret, roles, runtime)
+			shArg(panelURL), shArg(agent.NodeKey), shArg(agent.Secret), shArg(roles), shArg(runtime))
 		if ver != "" {
 			args += " --frp-version " + ver
 		}
-		return fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- %s", panelURL, args)
+		return fmt.Sprintf("curl -fsSL %s | sudo bash -s -- %s", shArg(panelURL+"/install.sh"), args)
 	}
 }
 
 // binaryUninstallCommand 只需安装实例标识；不把签名密钥放进卸载命令。
 func binaryUninstallCommand(panelURL, nodeKey, osName string) string {
 	if strings.HasPrefix(osName, "win") {
-		return fmt.Sprintf("powershell -ExecutionPolicy Bypass -Command \"irm %s/install.ps1 -OutFile install.ps1; .\\install.ps1 -Uninstall -Instance %s\"", panelURL, nodeKey)
+		return psCommand(fmt.Sprintf("irm %s -OutFile install.ps1; .\\install.ps1 -Uninstall -Instance %s", psArg(panelURL+"/install.ps1"), psArg(nodeKey)))
 	}
-	return fmt.Sprintf("curl -fsSL %s/install.sh | sudo bash -s -- --uninstall --instance %s", panelURL, nodeKey)
+	return fmt.Sprintf("curl -fsSL %s | sudo bash -s -- --uninstall --instance %s", shArg(panelURL+"/install.sh"), shArg(nodeKey))
 }
 
 // Docker 运行时的 frp 由 Agent 单独创建，移除 Agent 容器后再按该实例的数据目录清理。
@@ -327,8 +343,8 @@ const agentComposeDataDir = "./dfpanel-agent-data"
 func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime, image string) string {
 	dataDir := agentDataHostDir + "/" + agent.NodeKey
 	lines := []string{
-		fmt.Sprintf("docker run -d --name dfpanel-agent-%s --restart unless-stopped \\", agent.NodeKey),
-		fmt.Sprintf("  -e DFPANEL_URL=%s \\", panelURL),
+		fmt.Sprintf("docker run -d --name dfpanel-agent-%s --restart unless-stopped --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \\", agent.NodeKey),
+		fmt.Sprintf("  -e DFPANEL_URL=%s \\", shArg(panelURL)),
 		fmt.Sprintf("  -e DFPANEL_NODE_KEY=%s \\", agent.NodeKey),
 		fmt.Sprintf("  -e DFPANEL_NODE_SECRET=%s \\", agent.Secret),
 		fmt.Sprintf("  -e DFPANEL_ROLES=%s \\", roles),
@@ -342,7 +358,7 @@ func dockerRunCommand(panelURL string, agent *model.Agent, roles, runtime, image
 	if runtime == "docker" {
 		lines = append(lines, "  -v /var/run/docker.sock:/var/run/docker.sock \\")
 	}
-	lines = append(lines, "  --network host \\", "  "+image)
+	lines = append(lines, "  --network host \\", "  "+shArg(image))
 	return strings.Join(lines, "\n")
 }
 
@@ -362,6 +378,11 @@ func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, i
     container_name: dfpanel-agent-%s
     restart: unless-stopped
     network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       DFPANEL_URL: %s
       DFPANEL_NODE_KEY: %s
@@ -369,5 +390,5 @@ func dockerComposeSnippet(panelURL string, agent *model.Agent, roles, runtime, i
       DFPANEL_ROLES: %s
       DFPANEL_RUNTIME: %s
 %s    volumes:
-%s`, agent.NodeKey, image, agent.NodeKey, panelURL, agent.NodeKey, agent.Secret, roles, runtime, versionLine, volumes)
+%s`, agent.NodeKey, psArg(image), agent.NodeKey, psArg(panelURL), psArg(agent.NodeKey), psArg(agent.Secret), psArg(roles), psArg(runtime), versionLine, volumes)
 }

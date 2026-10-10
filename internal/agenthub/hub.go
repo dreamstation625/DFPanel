@@ -22,10 +22,17 @@ import (
 )
 
 // Hub 管理所有在线 Agent 连接
+var IdentityMu sync.Mutex
+
+type pendingResult struct {
+	conn *Conn
+	ch   chan proto.Envelope
+}
+
 type Hub struct {
 	mu      sync.RWMutex
 	conns   map[uint]*Conn
-	pending map[string]chan proto.Envelope
+	pending map[string]pendingResult
 	states  map[uint]map[string]proto.TargetState
 }
 
@@ -33,7 +40,7 @@ type Hub struct {
 func New() *Hub {
 	return &Hub{
 		conns:   make(map[uint]*Conn),
-		pending: make(map[string]chan proto.Envelope),
+		pending: make(map[string]pendingResult),
 		states:  make(map[uint]map[string]proto.TargetState),
 	}
 }
@@ -118,7 +125,11 @@ func (h *Hub) Send(agentID uint, env proto.Envelope, timeout time.Duration) (pro
 	ch := make(chan proto.Envelope, 1)
 
 	h.mu.Lock()
-	h.pending[env.ID] = ch
+	if _, exists := h.pending[env.ID]; exists {
+		h.mu.Unlock()
+		return proto.Envelope{}, errors.New("重复的指令编号")
+	}
+	h.pending[env.ID] = pendingResult{conn: c, ch: ch}
 	h.mu.Unlock()
 
 	defer func() {
@@ -128,12 +139,16 @@ func (h *Hub) Send(agentID uint, env proto.Envelope, timeout time.Duration) (pro
 	}()
 
 	select {
+	case <-c.done:
+		return proto.Envelope{}, ErrOffline
 	case c.send <- env:
 	case <-time.After(5 * time.Second):
 		return proto.Envelope{}, errors.New("发送指令超时")
 	}
 
 	select {
+	case <-c.done:
+		return proto.Envelope{}, ErrOffline
 	case resp := <-ch:
 		return resp, nil
 	case <-time.After(timeout):
@@ -231,10 +246,21 @@ func stateKey(targetType string, targetID uint) string {
 }
 
 func (c *Conn) readLoop() {
+	c.ws.SetReadLimit(4 << 20)
+	_ = c.ws.SetReadDeadline(time.Now().Add(90 * time.Second))
 	defer c.close()
 	for {
 		var env proto.Envelope
 		if err := c.ws.ReadJSON(&env); err != nil {
+			return
+		}
+		_ = c.ws.SetReadDeadline(time.Now().Add(90 * time.Second))
+		IdentityMu.Lock()
+		c.hub.mu.RLock()
+		current := c.hub.conns[c.agentID] == c
+		c.hub.mu.RUnlock()
+		if !current {
+			IdentityMu.Unlock()
 			return
 		}
 		switch env.Type {
@@ -244,8 +270,9 @@ func (c *Conn) readLoop() {
 				c.hub.UpdateState(c.agentID, hb, c.ws.RemoteAddr().String())
 			}
 		default:
-			c.hub.deliver(env)
+			c.hub.deliver(c, env)
 		}
+		IdentityMu.Unlock()
 	}
 }
 
@@ -256,6 +283,8 @@ func (c *Conn) writeLoop() {
 
 	for {
 		select {
+		case <-c.done:
+			return
 		case env, ok := <-c.send:
 			if !ok {
 				return
@@ -273,18 +302,18 @@ func (c *Conn) writeLoop() {
 	}
 }
 
-func (h *Hub) deliver(env proto.Envelope) {
-	if env.ID == "" {
+func (h *Hub) deliver(c *Conn, env proto.Envelope) {
+	if env.ID == "" || env.Type != proto.MsgCommandResult {
 		return
 	}
 	h.mu.RLock()
-	ch, ok := h.pending[env.ID]
+	p, ok := h.pending[env.ID]
 	h.mu.RUnlock()
-	if !ok {
+	if !ok || p.conn != c {
 		return
 	}
 	select {
-	case ch <- env:
+	case p.ch <- env:
 	default:
 	}
 }
@@ -297,4 +326,17 @@ func (c *Conn) close() {
 		}
 		close(c.done)
 	})
+}
+
+// Revoke 立即终止撤销身份的连接，唤醒在途调用并清空状态。调用方持有 IdentityMu。
+func (h *Hub) Revoke(id uint) {
+	h.mu.RLock()
+	c := h.conns[id]
+	h.mu.RUnlock()
+	if c != nil {
+		c.close()
+	}
+	h.mu.Lock()
+	delete(h.states, id)
+	h.mu.Unlock()
 }

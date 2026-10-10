@@ -71,8 +71,9 @@ function onSelect(index: string) {
 }
 
 async function onCommand(cmd: string) {
-  if (cmd !== 'logout') return
+  if (cmd !== 'logout' && cmd !== 'logout-all') return
   await ElMessageBox.confirm('确认退出登录？', '提示', { type: 'warning' })
+  await authApi.logout(cmd === 'logout-all')
   localStorage.removeItem('dfpanel_token')
   localStorage.removeItem('dfpanel_user')
   router.push('/login')
@@ -145,6 +146,7 @@ async function onCommand(cmd: string) {
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="logout">退出登录</el-dropdown-item>
+              <el-dropdown-item command="logout-all">退出所有设备</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>

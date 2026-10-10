@@ -28,7 +28,7 @@ function fmtSize(bytes?: number) {
 /** Agent 模式下只有本地还保留快照的版本能回滚；本机托管模式走面板记录，可回滚 */
 function canRollback(row: ConfigVersionItem) {
   if (row.current) return false
-  return props.fromAgent ? !!row.onAgent : true
+  return !!row.hasConfig || !!row.onAgent
 }
 </script>
 
@@ -40,7 +40,7 @@ function canRollback(row: ConfigVersionItem) {
       show-icon
       :closable="false"
       title="当前显示面板侧的版本记录"
-      description="Agent 离线，无法读取本地快照；仍可回滚（面板会重新下发）。"
+      description="有配置快照的版本可以回滚；远端实例离线时，命令会排队等待执行。"
       style="margin-bottom: 12px"
     />
 

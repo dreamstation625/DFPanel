@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+
 	"os"
 	"path/filepath"
 	"runtime"
@@ -36,20 +36,9 @@ func NewClient(cfg *Config) *Client {
 	return &Client{cfg: cfg, http: &http.Client{Timeout: 30 * time.Second}}
 }
 
-// authQuery 生成带签名的查询串
-func (c *Client) authQuery() string {
-	ts := time.Now().Unix()
-	return fmt.Sprintf("nodeKey=%s&ts=%d&sign=%s&instanceId=%s&hostId=%s&role=%s",
-		url.QueryEscape(c.cfg.NodeKey), ts, proto.Sign(c.cfg.Secret, c.cfg.NodeKey, ts),
-		url.QueryEscape(c.cfg.InstanceID), url.QueryEscape(c.cfg.HostID), url.QueryEscape(c.cfg.Roles))
-}
-
-func (c *Client) api(path string) string {
-	sep := "?"
-	if strings.Contains(path, "?") {
-		sep = "&"
-	}
-	return c.cfg.PanelURL + path + sep + c.authQuery()
+func (c *Client) api(path string) string { return c.cfg.PanelURL + path }
+func (c *Client) authorize(req *http.Request, body []byte) error {
+	return proto.AuthorizeRequest(req, c.cfg.Secret, c.cfg.NodeKey, c.cfg.InstanceID, c.cfg.HostID, c.cfg.Roles, body)
 }
 
 // Register 注册并上报机器信息
@@ -98,17 +87,10 @@ func (c *Client) PullCommands() ([]proto.CommandData, error) {
 // Report 上报指令执行结果（含应用失败、回滚与未确认状态）
 func (c *Client) Report(commandID uint, r proto.ResultData) error {
 	var out map[string]any
-	return c.post("/api/agent/report", map[string]any{
-		"commandId":  commandID,
-		"ok":         r.OK,
-		"message":    r.Message,
-		"content":    r.Content,
-		"running":    r.Running,
-		"version":    r.Version,
-		"checksum":   r.Checksum,
-		"rolledBack": r.RolledBack,
-		"unverified": r.Unverified,
-	}, &out)
+	return c.post("/api/agent/report", struct {
+		CommandID uint `json:"commandId"`
+		proto.ResultData
+	}{commandID, r}, &out)
 }
 
 // DownloadBinary 从面板下载指定版本的 frps / frpc 二进制，落到版本化存储目录。
@@ -202,12 +184,26 @@ func (c *Client) DialWS() (*websocket.Conn, error) {
 		base = "ws://" + base
 	}
 	dialer := &websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	conn, _, err := dialer.Dial(base+"/api/agent/ws?"+c.authQuery(), nil)
+	req, err := http.NewRequest(http.MethodGet, c.api("/api/agent/ws"), nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.authorize(req, nil); err != nil {
+		return nil, err
+	}
+	conn, _, err := dialer.Dial(base+"/api/agent/ws", req.Header)
 	return conn, err
 }
 
 func (c *Client) get(path string, out any) error {
-	resp, err := c.http.Get(c.api(path))
+	req, err := http.NewRequest(http.MethodGet, c.api(path), nil)
+	if err != nil {
+		return err
+	}
+	if err := c.authorize(req, nil); err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
 	}
@@ -222,6 +218,9 @@ func (c *Client) post(path string, body any, out any) error {
 	}
 	req, err := http.NewRequest(http.MethodPost, c.api(path), bytes.NewReader(data))
 	if err != nil {
+		return err
+	}
+	if err := c.authorize(req, data); err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")

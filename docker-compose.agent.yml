@@ -10,6 +10,11 @@ services:
       dockerfile: Dockerfile.agent
     container_name: dfpanel-agent-${DFPANEL_NODE_KEY:?set_node_key}
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
     # host 网络最简单：frps 监听宿主端口、frpc 可直接穿透宿主服务
     # bridge 模式请把隧道的 localIP 填成 host.docker.internal 或宿主内网 IP

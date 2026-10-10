@@ -1,40 +1,19 @@
 name: Docker
 
-# 版本号变更时才构建并推送镜像：
-#   - push 到 main 且改动了 VERSION（或本 workflow 文件）
-#   - 推送 v* 版本 tag（要求 tag 与 VERSION 一致）
-#   - 手动触发（强制重新构建）
-#
-# 面板版本取自 VERSION，Agent 版本取自 VERSION.agent（缺省跟随面板）。
-# Agent 镜像按 Agent 版本打标签：预发布版已有同版本镜像时跳过构建；正式版重新构建以同步 latest。
-#
-# 版本号格式：0.0.1（正式）或 0.0.1-beta / 0.0.1-beta.2 / 0.0.1-beta.02 / 0.0.1-rc.1（预发布）。
-# 预发布版本只打版本号标签，不覆盖 latest。
-# 注意：0.0.1-beta.02 这类带前导零的序号不是严格 SemVer，docker/metadata-action 的
-# semver 类型会跳过它；精确版本标签由 type=raw 保证，不受影响。
-#
-# 依赖仓库 Environment「DOCKERHUB」：
-#   variable DOCKERHUB_USERNAME
-#   secret   DOCKERHUB_TOKEN
+# dev 自动发布 pre；main 合并后发布正式版。tag 不触发发布。
+# VERSION / VERSION.agent 保存正式目标版本，dev 自动附加提交标识。
 
 on:
   push:
-    branches: [main]
-    paths:
-      - VERSION
-      - VERSION.agent
-      - .github/workflows/docker.yml
-    tags: ['v*']
+    branches: [dev, main]
   workflow_dispatch:
-    inputs:
-      force:
-        description: 强制重建（忽略「该版本镜像已存在」的检查）
-        type: boolean
-        default: false
+
+permissions:
+  contents: read
 
 concurrency:
   group: docker-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   verify:
@@ -49,61 +28,17 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 读取并校验版本号
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 检查发布策略
+        run: node --test .github/scripts/release-version.test.cjs
+
+      - name: 读取分支对应版本并拒绝覆盖其它提交
         id: ver
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
-          VERSION="$(tr -d ' \n\r' < VERSION)"
-          if [ -z "$VERSION" ]; then
-            echo "VERSION 文件为空，请先写入版本号"
-            exit 1
-          fi
-          # 主版本必须为 x.y.z；预发布后缀允许字母/数字/点/连字符（如 beta、beta.2、beta.01、rc.1）
-          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
-            echo "VERSION 格式不正确：$VERSION（应形如 0.0.1 或 0.0.1-beta.02）"
-            exit 1
-          fi
-
-          PRERELEASE=false
-          case "$VERSION" in
-            *-*) PRERELEASE=true ;;
-          esac
-
-          # 预发布版本不覆盖 latest，避免用户拉到未稳定的构建
-          LATEST=false
-          if [ "$PRERELEASE" = "false" ]; then
-            case "${GITHUB_REF}" in
-              refs/tags/*) LATEST=true ;;                        # 正式 tag（v0.0.1）
-              "refs/heads/${DEFAULT_BRANCH}") LATEST=true ;;      # 默认分支（main）
-            esac
-          fi
-
-          # Agent 有独立版本文件；它没变时 agent job 会跳过镜像重建
-          AGENT_VERSION="$VERSION"
-          if [ -f VERSION.agent ]; then
-            AGENT_VERSION="$(tr -d ' \n\r' < VERSION.agent)"
-          fi
-          if ! printf '%s' "$AGENT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
-            echo "VERSION.agent 格式不正确：$AGENT_VERSION（应形如 0.0.1 或 0.0.1-beta.02）"
-            exit 1
-          fi
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "agent_version=$AGENT_VERSION" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
-          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
-          echo "本次构建：面板 $VERSION / Agent $AGENT_VERSION（预发布=$PRERELEASE，更新 latest=$LATEST）"
-
-      - name: 校验 tag 与 VERSION 是否一致
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          if [ "$TAG" != "${{ steps.ver.outputs.version }}" ]; then
-            echo "tag $GITHUB_REF_NAME 与 VERSION ${{ steps.ver.outputs.version }} 不一致"
-            exit 1
-          fi
+        run: node .github/scripts/release-version.cjs
 
       - name: 安装 Go
         uses: actions/setup-go@v5
@@ -117,11 +52,26 @@ jobs:
       - name: 编译（注入版本号）
         run: |
           go build -trimpath \
-            -ldflags "-X main.version=${{ steps.ver.outputs.version }} -X dfpanel/internal/agent.Version=${{ steps.ver.outputs.version }}" \
+            -ldflags "-X main.version=${{ steps.ver.outputs.version }} -X dfpanel/internal/agent.Version=${{ steps.ver.outputs.agent_version }}" \
             ./...
+
+      - name: 回归测试
+        run: go test ./...
 
       - name: 静态检查
         run: go vet ./...
+
+      - name: 安装前端依赖
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+
+      - name: 前端类型检查
+        working-directory: web
+        run: npm run type-check
+
+      - name: 前端生产构建
+        working-directory: web
+        run: npm run build
 
   panel:
     name: 面板镜像
@@ -156,6 +106,7 @@ jobs:
             latest=false
           tags: |
             type=raw,value=${{ needs.verify.outputs.version }}
+            type=raw,value=pre,enable=${{ needs.verify.outputs.prerelease }}
             type=raw,value=latest,enable=${{ needs.verify.outputs.latest }}
           labels: |
             org.opencontainers.image.title=DFPanel
@@ -168,6 +119,9 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          build-args: |
+            PANEL_VERSION=${{ needs.verify.outputs.version }}
+            AGENT_VERSION=${{ needs.verify.outputs.agent_version }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -197,29 +151,6 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 检查该版本镜像是否已存在
-        id: check
-        run: |
-          set -euo pipefail
-          TAG="${{ needs.verify.outputs.agent_version }}"
-          if [ "${{ github.event.inputs.force }}" = "true" ]; then
-            echo "手动指定强制重建，跳过检查"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "${{ needs.verify.outputs.latest }}" = "true" ]; then
-            echo "正式版需要同步 latest，正常构建"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if docker manifest inspect "${{ vars.DOCKERHUB_USERNAME }}/dfpanel-agent:${TAG}" > /dev/null 2>&1; then
-            echo "dfpanel-agent:${TAG} 已存在，跳过预发布版构建（要重建请提升 VERSION.agent，或手动触发并勾选 force）"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "dfpanel-agent:${TAG} 不存在，正常构建"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: 生成镜像标签
         id: meta
         uses: docker/metadata-action@v5
@@ -230,6 +161,7 @@ jobs:
             latest=false
           tags: |
             type=raw,value=${{ needs.verify.outputs.agent_version }}
+            type=raw,value=pre,enable=${{ needs.verify.outputs.prerelease }}
             type=raw,value=latest,enable=${{ needs.verify.outputs.latest }}
           labels: |
             org.opencontainers.image.title=DFPanel Agent
@@ -238,11 +170,12 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: 构建并推送
-        if: steps.check.outputs.skip != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile.agent
+          build-args: |
+            AGENT_VERSION=${{ needs.verify.outputs.agent_version }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

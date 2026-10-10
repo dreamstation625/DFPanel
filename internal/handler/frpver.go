@@ -285,7 +285,7 @@ func (h *FrpHandler) restartLocal(servers []model.FrpsServer, runningBefore map[
 // AgentFrp GET /api/agents/:id/frp 某 Agent 的 frp 版本状态
 func (h *FrpHandler) AgentFrp(c *gin.Context) {
 	var a model.Agent
-	if err := database.DB.First(&a, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&a, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Agent 不存在"})
 		return
 	}
@@ -470,7 +470,7 @@ func (h *FrpHandler) AgentFrpActivate(c *gin.Context) {
 // agentAndVersion 取出 Agent 与解析后的具体版本号（latest 在面板侧解析，避免 Agent 各自漂移）
 func (h *FrpHandler) agentAndVersion(c *gin.Context) (*model.Agent, string, bool) {
 	var a model.Agent
-	if err := database.DB.First(&a, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&a, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Agent 不存在"})
 		return nil, "", false
 	}

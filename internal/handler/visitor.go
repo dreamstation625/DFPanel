@@ -36,6 +36,8 @@ func (h *VisitorHandler) List(c *gin.Context) {
 
 // Create POST /api/nodes/:id/visitors
 func (h *VisitorHandler) Create(c *gin.Context) {
+	unlock := lockTarget("node", routeID(c))
+	defer unlock()
 	nodeID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
@@ -76,8 +78,14 @@ func (h *VisitorHandler) Create(c *gin.Context) {
 // Update POST /api/visitors/:id/update
 func (h *VisitorHandler) Update(c *gin.Context) {
 	var old model.Visitor
-	if err := database.DB.First(&old, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&old, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "访问端不存在"})
+		return
+	}
+	unlock := lockTarget("node", old.NodeID)
+	defer unlock()
+	if err := database.DB.First(&old, routeID(c)).Error; err != nil {
+		c.JSON(404, gin.H{"error": "访问端不存在"})
 		return
 	}
 	var req model.Visitor
@@ -109,6 +117,13 @@ func (h *VisitorHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
 		return
 	}
+	var old model.Visitor
+	if err := database.DB.First(&old, id).Error; err != nil {
+		c.JSON(404, gin.H{"error": "访问端不存在"})
+		return
+	}
+	unlock := lockTarget("node", old.NodeID)
+	defer unlock()
 	if err := database.DB.Delete(&model.Visitor{}, id).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败"})
 		return

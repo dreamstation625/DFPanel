@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -20,7 +21,7 @@ const (
 	releaseURL   = "https://github.com/dreamstation625/DFPanel/releases/tag/"
 )
 
-// Published 是一个检测通道的最新版本。Agent 版本从发布 tag 的 VERSION.agent 读取。
+// Published 是一个检测通道的最新版本。Agent 读取目标版本后匹配 CI 预发布后缀。
 type Published struct {
 	PanelVersion    string
 	AgentVersion    string
@@ -217,5 +218,14 @@ func (client *Client) agentVersion(ctx context.Context, tag, fallback string) (s
 	if _, valid := Compare(agentVersion, agentVersion); !valid {
 		return "", "发布文件 VERSION.agent 中的版本号无效"
 	}
+	// dev 的版本文件保存正式目标版本，CI 对两端注入同一预发布后缀。
+	// 仅识别新渠道的后缀，保留旧 beta/rc 发布中独立 Agent 版本的语义。
+	if suffix := ciPrereleaseSuffix.FindString(fallback); suffix != "" {
+		if pre, valid := IsPrerelease(agentVersion); valid && !pre {
+			agentVersion += suffix
+		}
+	}
 	return agentVersion, ""
 }
+
+var ciPrereleaseSuffix = regexp.MustCompile(`-pre\.[1-9][0-9]*\.g[0-9a-f]{12}$`)

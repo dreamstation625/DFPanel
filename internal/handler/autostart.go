@@ -2,6 +2,7 @@ package handler
 
 import (
 	"log"
+	"os"
 
 	"dfpanel/internal/database"
 	"dfpanel/internal/model"
@@ -18,21 +19,15 @@ func autoStartFlags(autoStart bool) string {
 
 // markServerStopped 记录服务端的手动启停意图：
 // 手动停过的实例在面板 / Agent 重启后不再自动拉起，手动启动或重启后恢复。
-func markServerStopped(id uint, stopped bool) {
-	_ = database.DB.Model(&model.FrpsServer{}).Where("id = ?", id).
-		Update("manual_stopped", stopped).Error
-}
-
-// markNodeStopped 同上，节点（frpc）版本
-func markNodeStopped(id uint, stopped bool) {
-	_ = database.DB.Model(&model.Node{}).Where("id = ?", id).
+func markServerStopped(id uint, stopped bool) error {
+	return database.DB.Model(&model.FrpsServer{}).Where("id = ?", id).
 		Update("manual_stopped", stopped).Error
 }
 
 // StartAutoServers 面板启动时把「开了自动启动、且没被手动停过」的本机服务端拉起来。
 //
 // 交给 Agent 托管的实例不在这里处理 —— Agent 侧按自己的本地状态恢复。
-// 配置文件和配置一样由面板生成，所以这里要先写一遍配置再启动（面板重启后文件可能还没落盘）。
+// 使用最近可恢复快照；升级前已有磁盘配置时先留存，避免把未应用的表单改动直接启动。
 func (h *ServerHandler) StartAutoServers() {
 	mgr := h.mgr
 	if !mgr.IsInstalled() {
@@ -41,26 +36,40 @@ func (h *ServerHandler) StartAutoServers() {
 	var servers []model.FrpsServer
 	database.DB.Where("auto_start = ?", true).Find(&servers)
 	for _, s := range servers {
-		if isAgentMode(&s) || mgr.Running(s.ID) {
-			continue
-		}
-		if s.ManualStopped {
-			log.Printf("服务端「%s」被手动停过，跳过自动启动", s.Name)
-			continue
-		}
-		content, err := h.buildConfig(&s)
-		if err != nil {
-			log.Printf("自动启动服务端「%s」失败：生成配置出错：%v", s.Name, err)
-			continue
-		}
-		if err := mgr.WriteConfig(s.ID, content); err != nil {
-			log.Printf("自动启动服务端「%s」失败：写入配置出错：%v", s.Name, err)
-			continue
-		}
-		if err := mgr.Start(s.ID); err != nil {
-			log.Printf("自动启动服务端「%s」失败：%v", s.Name, err)
-			continue
-		}
-		log.Printf("已自动启动服务端「%s」（frps-%d）", s.Name, s.ID)
+		h.startAutoServer(s.ID)
 	}
+}
+func (h *ServerHandler) startAutoServer(id uint) {
+	unlock := lockTarget("server", id)
+	defer unlock()
+	var s model.FrpsServer
+	if err := database.DB.First(&s, id).Error; err != nil {
+		return
+	}
+	if !s.AutoStart || s.ManualStopped || isAgentMode(&s) || h.mgr.Running(id) {
+		return
+	}
+	var snapshot model.ConfigVersion
+	if err := database.DB.Where("target_type = ? AND target_id = ? AND status IN ?", "server", id, []string{"applied", "unverified"}).Order("version desc").First(&snapshot).Error; err != nil {
+		// 旧版本没有本机快照：仅迁移磁盘上已存在的配置，不把未应用的表单当成运行配置。
+		content, err := os.ReadFile(h.mgr.ConfigPath(id))
+		if err != nil {
+			log.Printf("服务端「%s」没有可恢复的应用配置，请先应用配置", s.Name)
+			return
+		}
+		cv, err := recordConfigVersion("server", id, string(content))
+		if err != nil {
+			log.Printf("保存旧配置快照失败：%v", err)
+			return
+		}
+		snapshot = *cv
+		setConfigVersionStatus(cv.ID, "unverified", "升级时保存本机已有配置，尚未确认运行")
+	}
+	result := h.mgr.Apply(id, snapshot.Content, "start")
+	if !result.OK {
+		log.Printf("自动启动服务端「%s」失败：%s", s.Name, result.Message)
+		return
+	}
+	setConfigVersionStatus(snapshot.ID, "applied", result.Message)
+	log.Printf("已自动启动服务端「%s」（frps-%d）", s.Name, id)
 }

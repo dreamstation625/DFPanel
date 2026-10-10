@@ -153,3 +153,28 @@ func TestStableAgentSkipsPrereleaseVersion(t *testing.T) {
 		t.Fatalf("正式版 Agent 不应指向 beta：结果=%+v，错误=%v", result, err)
 	}
 }
+
+func TestDevReleaseUsesBuildVersionAndChronologicalOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases":
+			// 新提交 SHA 字典序较小，仍应按提交时间选中它。
+			_, _ = w.Write([]byte(`[{"tag_name":"v0.0.3-pre.1791590400.gffffffffffff"},{"tag_name":"v0.0.3-pre.1791590401.g000000000000"},{"tag_name":"v0.0.2"}]`))
+		case "/contents/VERSION.agent":
+			if r.URL.Query().Get("ref") == "v0.0.2" {
+				writeAgentVersion(w, "0.0.2")
+			} else {
+				writeAgentVersion(w, "0.0.4")
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &Client{httpClient: server.Client(), apiURL: server.URL + "/releases", agentFileURL: server.URL + "/contents/VERSION.agent"}
+	result, err := client.Check(context.Background(), false)
+	if err != nil || result.Any.PanelVersion != "0.0.3-pre.1791590401.g000000000000" ||
+		result.Any.AgentVersion != "0.0.4-pre.1791590401.g000000000000" || result.Stable.AgentVersion != "0.0.2" {
+		t.Fatalf("预发布版本与构建版本不一致：结果=%+v，错误=%v", result, err)
+	}
+}

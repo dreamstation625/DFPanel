@@ -10,6 +10,11 @@ services:
       dockerfile: Dockerfile
     container_name: dfpanel
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
     # Linux 推荐 host 网络：frps 的 7000 / dashboard 7500 / vhost 80,443 无需逐个映射
     # Windows / macOS 的 Docker 桌面版不支持 host 网络，请注释掉 network_mode 并启用下面的 ports

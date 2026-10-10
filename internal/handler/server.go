@@ -77,7 +77,7 @@ func (h *ServerHandler) List(c *gin.Context) {
 // Get GET /api/servers/:id
 func (h *ServerHandler) Get(c *gin.Context) {
 	var s model.FrpsServer
-	if err := database.DB.First(&s, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&s, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "服务端不存在"})
 		return
 	}
@@ -128,8 +128,10 @@ func (h *ServerHandler) Create(c *gin.Context) {
 
 // Update PUT /api/servers/:id
 func (h *ServerHandler) Update(c *gin.Context) {
+	unlock := lockTarget("server", routeID(c))
+	defer unlock()
 	var old model.FrpsServer
-	if err := database.DB.First(&old, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&old, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "服务端不存在"})
 		return
 	}
@@ -170,6 +172,8 @@ func (h *ServerHandler) Update(c *gin.Context) {
 
 // Delete DELETE /api/servers/:id
 func (h *ServerHandler) Delete(c *gin.Context) {
+	unlock := lockTarget("server", routeID(c))
+	defer unlock()
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
@@ -227,6 +231,8 @@ func (h *ServerHandler) Preview(c *gin.Context) {
 
 // Apply POST /api/servers/:id/apply 生成配置并生效（本地模式落盘重启；Agent 模式下发并确认）
 func (h *ServerHandler) Apply(c *gin.Context) {
+	unlock := lockTarget("server", routeID(c))
+	defer unlock()
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
@@ -250,8 +256,12 @@ func (h *ServerHandler) Apply(c *gin.Context) {
 
 	// Agent 模式：生成版本 → 下发 → Agent 自行校验并在失败时回滚
 	if isAgentMode(&s) {
-		version := nextVersion(proto.TargetServer, s.ID)
-		recordConfigVersion(proto.TargetServer, s.ID, version, content)
+		cv, err := recordConfigVersion(proto.TargetServer, s.ID, content)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "保存配置快照失败：" + err.Error()})
+			return
+		}
+		version := cv.Version
 
 		res, err := dispatch(h.hub, &model.AgentCommand{
 			AgentID:    s.AgentID,
@@ -279,32 +289,20 @@ func (h *ServerHandler) Apply(c *gin.Context) {
 			"message":    res.Message,
 			"ok":         res.OK,
 			"rolledBack": res.RolledBack,
+			"unverified": res.Unverified,
 			"version":    version,
 			"status":     status,
 		})
 		return
 	}
 
-	// 本地一体化模式
-	if err := h.mgr.WriteConfig(uint(id), content); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入配置失败：" + err.Error()})
+	cv, err := recordConfigVersion(proto.TargetServer, s.ID, content)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "保存配置快照失败：" + err.Error()})
 		return
 	}
+	h.applyLocal(c, &s, cv, content, "apply")
 
-	restarted := false
-	if h.mgr.Running(uint(id)) {
-		if err := h.mgr.Restart(uint(id)); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "重启 frps 失败：" + err.Error()})
-			return
-		}
-		restarted = true
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message":   "配置已生效" + map[bool]string{true: "，frps 已重启", false: ""}[restarted],
-		"restarted": restarted,
-		"status":    h.statusOf(&s),
-	})
 }
 
 // Start POST /api/servers/:id/start
@@ -324,6 +322,8 @@ func (h *ServerHandler) Restart(c *gin.Context) {
 
 // lifecycle 统一处理启停重启：Agent 模式下发指令，本地模式直接操作进程
 func (h *ServerHandler) lifecycle(c *gin.Context, cmdType string) {
+	unlock := lockTarget("server", routeID(c))
+	defer unlock()
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
@@ -361,53 +361,35 @@ func (h *ServerHandler) lifecycle(c *gin.Context, cmdType string) {
 			return
 		}
 		h.hub.SetTargetRunning(s.AgentID, proto.TargetServer, s.ID, res.Running)
-		markServerStopped(s.ID, cmdType == proto.CmdStop)
 		c.JSON(http.StatusOK, gin.H{"message": res.Message, "status": h.statusOf(&s), "running": res.Running})
 		return
 	}
 
-	// 本地模式：启停前先刷新配置文件，避免读到旧配置
+	// 停止只操作进程，不生成或写入配置。
+	if cmdType == proto.CmdStop {
+		if err := h.mgr.Stop(s.ID); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		if err := markServerStopped(s.ID, true); err != nil {
+			c.JSON(500, gin.H{"error": "进程已停止，但保存停止意图失败：" + err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"message": "已停止", "status": h.statusOf(&s)})
+		return
+	}
 	content, err := h.buildConfig(&s)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成配置失败：" + err.Error()})
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.mgr.WriteConfig(uint(id), content); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入配置失败：" + err.Error()})
+	cv, err := recordConfigVersion(proto.TargetServer, s.ID, content)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "保存配置快照失败：" + err.Error()})
 		return
 	}
+	h.applyLocal(c, &s, cv, content, cmdType)
 
-	switch cmdType {
-	case proto.CmdStart:
-		if !h.mgr.IsInstalled() {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "未找到 frps 二进制，请先放置到 " + h.mgr.BinPath()})
-			return
-		}
-		if err := h.mgr.Start(uint(id)); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if reason := h.confirmRunning(uint(id)); reason != "" {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": reason})
-			return
-		}
-	case proto.CmdStop:
-		if err := h.mgr.Stop(uint(id)); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-	case proto.CmdRestart:
-		if err := h.mgr.Restart(uint(id)); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if reason := h.confirmRunning(uint(id)); reason != "" {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": reason})
-			return
-		}
-	}
-	markServerStopped(uint(id), cmdType == proto.CmdStop)
-	c.JSON(http.StatusOK, gin.H{"message": "操作完成", "status": h.statusOf(&s)})
 }
 
 // confirmRunning 启动/重启后确认进程没有立刻退出，返回空字符串表示正常。
@@ -483,7 +465,7 @@ func (h *ServerHandler) buildConfig(s *model.FrpsServer) (string, error) {
 	if isAgentMode(s) {
 		return frp.BuildFrpsJSON(s, "")
 	}
-	return frp.BuildFrpsJSON(s, h.mgr.LogPath(s.ID))
+	return frp.BuildFrpsJSON(s, "console")
 }
 
 // statusOf 计算运行状态：Agent 模式取心跳缓存，本地模式检查进程
@@ -517,7 +499,7 @@ func (h *ServerHandler) statusOf(s *model.FrpsServer) string {
 // Agent 托管时取 Agent 本地快照（可回滚），本机托管时返回面板侧记录
 func (h *ServerHandler) Versions(c *gin.Context) {
 	var s model.FrpsServer
-	if err := database.DB.First(&s, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&s, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "服务端不存在"})
 		return
 	}
@@ -554,8 +536,10 @@ func (h *ServerHandler) Versions(c *gin.Context) {
 // Agent 托管：下发 rollback 指令，Agent 用本地快照应用并做健康校验（失败会再回退）
 // 本机托管：面板直接写入目标版本配置并重启 frps
 func (h *ServerHandler) Rollback(c *gin.Context) {
+	unlock := lockTarget("server", routeID(c))
+	defer unlock()
 	var s model.FrpsServer
-	if err := database.DB.First(&s, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&s, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "服务端不存在"})
 		return
 	}
@@ -573,8 +557,12 @@ func (h *ServerHandler) Rollback(c *gin.Context) {
 		return
 	}
 
-	version := nextVersion(proto.TargetServer, s.ID)
-	recordConfigVersion(proto.TargetServer, s.ID, version, target.Content)
+	cv, err := recordConfigVersion(proto.TargetServer, s.ID, target.Content)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "保存配置快照失败：" + err.Error()})
+		return
+	}
+	version := cv.Version
 
 	if isAgentMode(&s) {
 		res, err := dispatch(h.hub, &model.AgentCommand{
@@ -582,7 +570,7 @@ func (h *ServerHandler) Rollback(c *gin.Context) {
 			Type:       proto.CmdRollback,
 			TargetType: proto.TargetServer,
 			TargetID:   s.ID,
-			Payload:    rollbackPayload(req.Version),
+			Payload:    rollbackPayload(req.Version, target.Content),
 			Version:    version,
 			TimeoutMs:  150000,
 		})
@@ -605,23 +593,8 @@ func (h *ServerHandler) Rollback(c *gin.Context) {
 		return
 	}
 
-	// 本机一体化：直接写入并重启
-	if err := h.mgr.WriteConfig(s.ID, target.Content); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入配置失败：" + err.Error()})
-		return
-	}
-	if h.mgr.Running(s.ID) {
-		if err := h.mgr.Restart(s.ID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "重启 frps 失败：" + err.Error()})
-			return
-		}
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"message": fmt.Sprintf("已回滚到版本 v%d", req.Version),
-		"ok":      true,
-		"version": version,
-		"status":  h.statusOf(&s),
-	})
+	h.applyLocal(c, &s, cv, target.Content, "apply")
+
 }
 
 // hostKey 判断两个服务端是否落在同一台机器上（本机托管视为同一台；Agent 托管按 Agent 区分）
@@ -669,7 +642,7 @@ func dashboardOn(s *model.FrpsServer) bool {
 func randomToken(n int) string {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
-		return "change-me-token"
+		panic("安全随机数生成失败：" + err.Error())
 	}
 	return hex.EncodeToString(buf)
 }
@@ -686,4 +659,26 @@ func randomPassword(n int) string {
 		buf[i] = charset[idx.Int64()]
 	}
 	return string(buf)
+}
+
+// applyLocal 统一记录应用结果，回滚失败不伪装成功。
+func (h *ServerHandler) applyLocal(c *gin.Context, s *model.FrpsServer, cv *model.ConfigVersion, content, mode string) {
+	result := h.mgr.Apply(s.ID, content, mode)
+	st := "applied"
+	if result.RolledBack {
+		st = "rolled_back"
+	} else if !result.OK {
+		st = "failed"
+	}
+	if err := database.DB.Model(cv).Updates(map[string]any{"status": st, "message": result.Message}).Error; err != nil {
+		c.JSON(500, gin.H{"error": "操作已执行，但保存结果失败：" + err.Error()})
+		return
+	}
+	if result.OK && mode != "apply" {
+		if err := markServerStopped(s.ID, false); err != nil {
+			c.JSON(500, gin.H{"error": "操作已执行，但保存启动意图失败：" + err.Error()})
+			return
+		}
+	}
+	c.JSON(200, gin.H{"ok": result.OK, "message": result.Message, "rolledBack": result.RolledBack, "running": result.Running, "version": cv.Version, "status": h.statusOf(s)})
 }

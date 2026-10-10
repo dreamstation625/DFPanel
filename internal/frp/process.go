@@ -12,16 +12,18 @@ import (
 	"time"
 
 	"dfpanel/internal/distrib"
+	"dfpanel/internal/logutil"
 )
 
 // proc 单个 frps 实例的运行态
 type proc struct {
 	cmd     *exec.Cmd
-	logFile *os.File
+	logFile *logutil.File
 }
 
 // Manager 负责 frps 进程的生命周期（一体化模式）
 type Manager struct {
+	opMu    sync.Mutex
 	mu      sync.Mutex
 	procs   map[uint]*proc
 	binDir  string
@@ -119,11 +121,14 @@ func (m *Manager) Running(id uint) bool {
 
 // WriteConfig 将生成内容写入磁盘（0644）
 func (m *Manager) WriteConfig(id uint, content string) error {
-	return os.WriteFile(m.ConfigPath(id), []byte(content), 0o644)
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	return atomicConfig(m.ConfigPath(id), content)
 }
 
 // Start 启动实例：调用 frps -c <config>
-func (m *Manager) Start(id uint) error {
+func (m *Manager) Start(id uint) error { m.opMu.Lock(); defer m.opMu.Unlock(); return m.start(id) }
+func (m *Manager) start(id uint) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -139,26 +144,29 @@ func (m *Manager) Start(id uint) error {
 		return fmt.Errorf("frps 二进制不可用：%w", err)
 	}
 
-	logFile, err := os.OpenFile(m.LogPath(id), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	logFile, err := logutil.Open(m.LogPath(id))
 	if err != nil {
 		return fmt.Errorf("打开日志文件失败: %w", err)
 	}
 
 	cmd := exec.Command(bin, "-c", m.ConfigPath(id))
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	cmd.Stdout = logFile.File
+	cmd.Stderr = logFile.File
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
 		return fmt.Errorf("启动 frps 失败: %w%s", err, distrib.ExecHint(err))
 	}
 
-	m.procs[id] = &proc{cmd: cmd, logFile: logFile}
+	p := &proc{cmd: cmd, logFile: logFile}
+	m.procs[id] = p
 
 	go func() {
 		_ = cmd.Wait()
 		_ = logFile.Close()
 		m.mu.Lock()
-		delete(m.procs, id)
+		if m.procs[id] == p {
+			delete(m.procs, id)
+		}
 		m.mu.Unlock()
 	}()
 
@@ -169,7 +177,8 @@ func (m *Manager) Start(id uint) error {
 //
 // 端口释放需要时间，立刻启动新实例会因端口被占而失败；
 // 版本切换（停 → 换二进制 → 启）也依赖退出后文件占用被释放，故这里必须等待。
-func (m *Manager) Stop(id uint) error {
+func (m *Manager) Stop(id uint) error { m.opMu.Lock(); defer m.opMu.Unlock(); return m.stop(id) }
+func (m *Manager) stop(id uint) error {
 	m.mu.Lock()
 	p := m.procs[id]
 	m.mu.Unlock()
@@ -177,30 +186,32 @@ func (m *Manager) Stop(id uint) error {
 	if p == nil || p.cmd.Process == nil {
 		return nil
 	}
-	if err := p.cmd.Process.Kill(); err != nil {
+	if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("停止 frps 失败: %w", err)
 	}
-	m.waitStopped(id)
-	return nil
+	return m.waitStopped(id)
 }
 
 // waitStopped 等待实例从运行表移除（进程退出后由 Wait 协程清理）
-func (m *Manager) waitStopped(id uint) {
+func (m *Manager) waitStopped(id uint) error {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if !m.Running(id) {
-			return
+			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	return fmt.Errorf("等待 frps 退出超时")
 }
 
 // Restart 重启实例
 func (m *Manager) Restart(id uint) error {
-	if err := m.Stop(id); err != nil {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	if err := m.stop(id); err != nil {
 		return err
 	}
-	return m.Start(id)
+	return m.start(id)
 }
 
 // TailLog 读取实例日志末尾 maxBytes 字节

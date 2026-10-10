@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"dfpanel/internal/agentbundle"
 	"dfpanel/internal/config"
@@ -75,10 +76,17 @@ func newPanelServer(cfg *config.Config) *http.Server {
 		log.Fatalf("初始化数据库失败: %v", err)
 	}
 
+	if cfg.PublicURL != "" {
+		v, err := config.PublicAddress(cfg.PublicURL)
+		if err != nil {
+			log.Fatal(err)
+		}
+		cfg.PublicURL = v
+	}
 	r := router.Setup(cfg)
 
 	log.Printf("DFPanel %s 已启动，请访问 http://localhost%s", version, cfg.Listen)
-	return &http.Server{Addr: cfg.Listen, Handler: r}
+	return &http.Server{Addr: cfg.Listen, Handler: r, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32 << 10}
 }
 
 // loadOrCreateSecret 读取或生成持久化的 JWT 密钥

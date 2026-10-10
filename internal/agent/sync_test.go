@@ -18,7 +18,7 @@ func TestSyncMissingConfigsRestoresOwnRoleWithoutReplacingLocalFile(t *testing.T
 		{TargetType: proto.TargetNode, TargetID: 3, Version: 5, Content: `{"serverAddr":"new.example"}`, AutoStart: true},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/agent/configs" || r.URL.Query().Get("sign") == "" {
+		if r.URL.Path != "/api/agent/configs" || r.Header.Get("X-Node-Sign") == "" || proto.VerifyRequest(r,"secret",nil)!=nil {
 			t.Errorf("unexpected request: %s", r.URL.String())
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return

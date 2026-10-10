@@ -3,7 +3,12 @@
 package main
 
 import (
+	"dfpanel/internal/logutil"
+	"io"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"dfpanel/internal/config"
 )
@@ -13,6 +18,11 @@ func servePanel(server *http.Server, _ *config.Config) error {
 	return server.ListenAndServe()
 }
 
-func preparePanelLog(_ *config.Config) (func(), error) {
-	return func() {}, nil
+func preparePanelLog(cfg *config.Config) (func(), error) {
+	f, err := logutil.Open(filepath.Join(cfg.DataDir, "panel.log"))
+	if err != nil {
+		return nil, err
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, f))
+	return func() { f.Close() }, nil
 }

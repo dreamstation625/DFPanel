@@ -44,7 +44,7 @@ func (h *AgentManageHandler) List(c *gin.Context) {
 // Get GET /api/agents/:id
 func (h *AgentManageHandler) Get(c *gin.Context) {
 	var a model.Agent
-	if err := database.DB.First(&a, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&a, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Agent 不存在"})
 		return
 	}
@@ -56,6 +56,11 @@ type createAgentReq struct {
 	Remark     string `json:"remark"`
 	Roles      string `json:"roles"`      // frps / frpc，二者互斥
 	FrpVersion string `json:"frpVersion"` // 选填：创建后先把该版本的 frp 二进制预置到目标机器，不切换、不重启
+}
+
+type agentCredentials struct {
+	model.Agent
+	Secret string `json:"secret"`
 }
 
 // Create POST /api/agents 创建 Agent 并生成安装令牌
@@ -106,13 +111,15 @@ func (h *AgentManageHandler) Create(c *gin.Context) {
 
 	// 期望版本只落在记录里：下载统一在设置页做，切换由用户在 Agent 上点。
 	// 这里不下发任何指令，免得 Agent 刚上线就被拖去抓上游。
-	c.JSON(http.StatusOK, a)
+	c.JSON(http.StatusOK, agentCredentials{Agent: a, Secret: a.Secret})
 }
 
 // Update PUT /api/agents/:id
 func (h *AgentManageHandler) Update(c *gin.Context) {
+	agentIdentityMu.Lock()
+	defer agentIdentityMu.Unlock()
 	var old model.Agent
-	if err := database.DB.First(&old, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&old, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Agent 不存在"})
 		return
 	}
@@ -152,6 +159,9 @@ func (h *AgentManageHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败：" + err.Error()})
 		return
 	}
+	if req.Roles != old.Roles {
+		h.hub.Revoke(old.ID)
+	}
 	if err := database.DB.First(&old, old.ID).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取保存结果失败：" + err.Error()})
 		return
@@ -161,6 +171,8 @@ func (h *AgentManageHandler) Update(c *gin.Context) {
 
 // Delete DELETE /api/agents/:id
 func (h *AgentManageHandler) Delete(c *gin.Context) {
+	agentIdentityMu.Lock()
+	defer agentIdentityMu.Unlock()
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
@@ -188,13 +200,16 @@ func (h *AgentManageHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败"})
 		return
 	}
+	h.hub.Revoke(uint(id))
 	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
 }
 
 // ResetToken POST /api/agents/:id/token/reset 重置安装密钥（重置后旧客户端需重新安装）
 func (h *AgentManageHandler) ResetToken(c *gin.Context) {
+	agentIdentityMu.Lock()
+	defer agentIdentityMu.Unlock()
 	var a model.Agent
-	if err := database.DB.First(&a, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&a, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Agent 不存在"})
 		return
 	}
@@ -205,10 +220,13 @@ func (h *AgentManageHandler) ResetToken(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "重置失败：" + err.Error()})
 		return
 	}
+	h.hub.Revoke(a.ID)
+	a.InstanceID = ""
+	a.HostID = ""
 	a.NodeKey = key
 	a.Secret = secret
 	a.Status = "offline"
-	c.JSON(http.StatusOK, a)
+	c.JSON(http.StatusOK, agentCredentials{Agent: a, Secret: a.Secret})
 }
 
 // Commands GET /api/agents/:id/commands 查看指令历史（排障用）

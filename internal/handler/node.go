@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"dfpanel/internal/agenthub"
 	"dfpanel/internal/config"
@@ -39,7 +40,7 @@ func (h *NodeHandler) List(c *gin.Context) {
 // Get GET /api/nodes/:id
 func (h *NodeHandler) Get(c *gin.Context) {
 	var n model.Node
-	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&n, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
 		return
 	}
@@ -104,8 +105,10 @@ func requireManagedAgent(agentID, excludeNodeID uint) error {
 
 // Update PUT /api/nodes/:id
 func (h *NodeHandler) Update(c *gin.Context) {
+	unlock := lockTarget("node", routeID(c))
+	defer unlock()
 	var old model.Node
-	if err := database.DB.First(&old, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&old, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
 		return
 	}
@@ -140,6 +143,8 @@ func (h *NodeHandler) Update(c *gin.Context) {
 
 // Delete DELETE /api/nodes/:id
 func (h *NodeHandler) Delete(c *gin.Context) {
+	unlock := lockTarget("node", routeID(c))
+	defer unlock()
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不合法"})
@@ -165,7 +170,15 @@ func (h *NodeHandler) Delete(c *gin.Context) {
 		}
 		queued = res.Queued
 	}
-	if err := database.DB.Delete(&n).Error; err != nil {
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("node_id = ?", n.ID).Delete(&model.Proxy{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("node_id = ?", n.ID).Delete(&model.Visitor{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&n).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败"})
 		return
 	}
@@ -175,7 +188,7 @@ func (h *NodeHandler) Delete(c *gin.Context) {
 // Preview GET /api/nodes/:id/config 预览 frpc.json
 func (h *NodeHandler) Preview(c *gin.Context) {
 	var n model.Node
-	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&n, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
 		return
 	}
@@ -189,8 +202,10 @@ func (h *NodeHandler) Preview(c *gin.Context) {
 
 // Apply POST /api/nodes/:id/apply 生成配置并下发给托管 Agent（失败由 Agent 自动回滚）
 func (h *NodeHandler) Apply(c *gin.Context) {
+	unlock := lockTarget("node", routeID(c))
+	defer unlock()
 	var n model.Node
-	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&n, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
 		return
 	}
@@ -205,8 +220,12 @@ func (h *NodeHandler) Apply(c *gin.Context) {
 		return
 	}
 
-	version := nextVersion(proto.TargetNode, n.ID)
-	recordConfigVersion(proto.TargetNode, n.ID, version, content)
+	cv, err := recordConfigVersion(proto.TargetNode, n.ID, content)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "保存配置快照失败：" + err.Error()})
+		return
+	}
+	version := cv.Version
 
 	res, err := dispatch(h.hub, &model.AgentCommand{
 		AgentID:    n.AgentID,
@@ -230,6 +249,7 @@ func (h *NodeHandler) Apply(c *gin.Context) {
 		"message":    res.Message,
 		"ok":         res.OK,
 		"rolledBack": res.RolledBack,
+		"unverified": res.Unverified,
 		"version":    version,
 		"running":    res.Running,
 		"status":     h.statusOf(n),
@@ -254,7 +274,7 @@ func (h *NodeHandler) Restart(c *gin.Context) {
 // Log GET /api/nodes/:id/log
 func (h *NodeHandler) Log(c *gin.Context) {
 	var n model.Node
-	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&n, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
 		return
 	}
@@ -281,8 +301,10 @@ func (h *NodeHandler) Log(c *gin.Context) {
 }
 
 func (h *NodeHandler) control(c *gin.Context, cmdType string) {
+	unlock := lockTarget("node", routeID(c))
+	defer unlock()
 	var n model.Node
-	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&n, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
 		return
 	}
@@ -309,14 +331,13 @@ func (h *NodeHandler) control(c *gin.Context, cmdType string) {
 		return
 	}
 	h.hub.SetTargetRunning(n.AgentID, proto.TargetNode, n.ID, res.Running)
-	markNodeStopped(n.ID, cmdType == proto.CmdStop)
 	c.JSON(http.StatusOK, gin.H{"message": res.Message, "running": res.Running, "status": h.statusOf(n)})
 }
 
 // Versions GET /api/nodes/:id/versions 查看托管 Agent 上保存的历史配置版本
 func (h *NodeHandler) Versions(c *gin.Context) {
 	var n model.Node
-	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&n, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
 		return
 	}
@@ -349,7 +370,7 @@ func (h *NodeHandler) Versions(c *gin.Context) {
 // 先查面板留存记录，缺失时再读在线 Agent 的同一目标和版本，不重新生成当前配置。
 func (h *NodeHandler) VersionConfig(c *gin.Context) {
 	var n model.Node
-	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&n, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
 		return
 	}
@@ -382,8 +403,10 @@ func (h *NodeHandler) VersionConfig(c *gin.Context) {
 
 // Rollback POST /api/nodes/:id/rollback 回滚到指定历史版本（由托管 Agent 应用并校验）
 func (h *NodeHandler) Rollback(c *gin.Context) {
+	unlock := lockTarget("node", routeID(c))
+	defer unlock()
 	var n model.Node
-	if err := database.DB.First(&n, c.Param("id")).Error; err != nil {
+	if err := database.DB.First(&n, routeID(c)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
 		return
 	}
@@ -406,15 +429,19 @@ func (h *NodeHandler) Rollback(c *gin.Context) {
 		return
 	}
 
-	version := nextVersion(proto.TargetNode, n.ID)
-	recordConfigVersion(proto.TargetNode, n.ID, version, target.Content)
+	cv, err := recordConfigVersion(proto.TargetNode, n.ID, target.Content)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "保存配置快照失败：" + err.Error()})
+		return
+	}
+	version := cv.Version
 
 	res, err := dispatch(h.hub, &model.AgentCommand{
 		AgentID:    n.AgentID,
 		Type:       proto.CmdRollback,
 		TargetType: proto.TargetNode,
 		TargetID:   n.ID,
-		Payload:    rollbackPayload(req.Version),
+		Payload:    rollbackPayload(req.Version, target.Content),
 		Version:    version,
 		TimeoutMs:  150000,
 	})

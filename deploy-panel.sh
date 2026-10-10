@@ -238,6 +238,11 @@ services:
     image: "$IMAGE"
     container_name: dfpanel
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     network_mode: host
     volumes:
       - "$DATA_DIR:/data"

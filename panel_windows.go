@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/windows/svc"
 
 	"dfpanel/internal/config"
+	"dfpanel/internal/logutil"
 )
 
 const panelServiceName = "DFPanel"
@@ -48,7 +49,7 @@ func preparePanelLog(cfg *config.Config) (func(), error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return nil, err
 	}
-	logFile, err := os.OpenFile(filepath.Join(cfg.DataDir, "panel.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	logFile, err := logutil.Open(filepath.Join(cfg.DataDir, "panel.log"))
 	if err != nil {
 		return nil, err
 	}

@@ -97,8 +97,8 @@ func findVersionRecord(targetType string, targetID uint, version int) (*model.Co
 }
 
 // rollbackPayload 回滚指令内容
-func rollbackPayload(targetVersion int) string {
-	data, _ := json.Marshal(map[string]int{"targetVersion": targetVersion})
+func rollbackPayload(targetVersion int, content string) string {
+	data, _ := json.Marshal(map[string]any{"targetVersion": targetVersion, "content": content})
 	return string(data)
 }
 

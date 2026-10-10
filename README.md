@@ -89,6 +89,8 @@
 
 版本依据为 [go.mod](go.mod)、[web/package.json](web/package.json) 和 Dockerfile。源码构建需要 Go 1.26；前端构建建议使用 Node.js 22（与 Dockerfile、CI 一致）。使用已构建的二进制或镜像时，运行机器无需安装 Go 和 Node.js。
 
+发布流程：`dev` 自动构建 Pre-release 和 `pre` 镜像；测试验证后合并到 `main`，再构建正式 Release 和 `latest` 镜像。详见 [dev 发布流程](docs/dev-发布流程.md)。
+
 ## 工作方式
 
 ```mermaid

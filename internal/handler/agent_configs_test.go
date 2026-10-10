@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,7 +26,7 @@ func TestManagedConfigsOnlyReturnsOwnedAppliedVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Agent{}, &model.Node{}, &model.FrpsServer{}, &model.ConfigVersion{}); err != nil {
+	if err := db.AutoMigrate(&model.Agent{}, &model.AgentNonce{}, &model.AgentCommand{}, &model.Node{}, &model.FrpsServer{}, &model.ConfigVersion{}); err != nil {
 		t.Fatal(err)
 	}
 	sqlDB, err := db.DB()
@@ -67,6 +68,7 @@ func TestManagedConfigsOnlyReturnsOwnedAppliedVersions(t *testing.T) {
 		{TargetType: proto.TargetNode, TargetID: node.ID, Version: 1, Content: `{"v":1}`, Status: "applied"},
 		{TargetType: proto.TargetNode, TargetID: node.ID, Version: 2, Content: `{"v":2}`, Status: "applied"},
 		{TargetType: proto.TargetNode, TargetID: node.ID, Version: 3, Content: `{"v":3}`, Status: "failed"},
+		{TargetType: proto.TargetNode, TargetID: node.ID, Version: 4, Content: `{"v":4}`, Status: "unverified"},
 		{TargetType: proto.TargetNode, TargetID: neverApplied.ID, Version: 1, Content: `{"draft":true}`, Status: "pending"},
 		{TargetType: proto.TargetNode, TargetID: otherNode.ID, Version: 1, Content: `{"other":true}`, Status: "applied"},
 		{TargetType: proto.TargetServer, TargetID: server.ID, Version: 4, Content: `{"bindPort":7000}`, Status: "applied"},
@@ -80,7 +82,7 @@ func TestManagedConfigsOnlyReturnsOwnedAppliedVersions(t *testing.T) {
 
 	router := gin.New()
 	router.GET("/api/agent/configs", NewAgentHandler(nil).ManagedConfigs)
-	request := httptest.NewRequest(http.MethodGet, signedConfigsURL(agent), nil)
+	request := signedAgentRequest(http.MethodGet, signedConfigsURL(agent), nil)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -99,30 +101,30 @@ func TestManagedConfigsOnlyReturnsOwnedAppliedVersions(t *testing.T) {
 		t.Fatalf("客户端 Agent 只能读取自己的节点配置：%+v", body.Configs)
 	}
 	gotNode := body.Configs[0]
-	if gotNode.TargetType != proto.TargetNode || gotNode.TargetID != node.ID || gotNode.Version != 2 ||
-		gotNode.Content != `{"v":2}` || !gotNode.AutoStart || !gotNode.ManualStopped {
+	if gotNode.TargetType != proto.TargetNode || gotNode.TargetID != node.ID || gotNode.Version != 4 ||
+		gotNode.Content != `{"v":4}` || !gotNode.AutoStart || !gotNode.ManualStopped {
 		t.Fatalf("客户端恢复快照不正确：%+v", gotNode)
 	}
 	duplicate := httptest.NewRecorder()
-	router.ServeHTTP(duplicate, httptest.NewRequest(http.MethodGet,
+	router.ServeHTTP(duplicate, signedAgentRequest(http.MethodGet,
 		strings.Replace(signedConfigsURL(agent), "0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210", 1), nil))
 	if duplicate.Code != http.StatusConflict {
 		t.Fatalf("同一凭据安装在第二台客户端应被拒绝：%d %s", duplicate.Code, duplicate.Body.String())
 	}
 	clonedDirectory := httptest.NewRecorder()
-	router.ServeHTTP(clonedDirectory, httptest.NewRequest(http.MethodGet,
+	router.ServeHTTP(clonedDirectory, signedAgentRequest(http.MethodGet,
 		strings.Replace(signedConfigsURL(agent), "11111111111111111111111111111111", "22222222222222222222222222222222", 1), nil))
 	if clonedDirectory.Code != http.StatusConflict {
 		t.Fatalf("复制安装目录到其它宿主机应被拒绝：%d %s", clonedDirectory.Code, clonedDirectory.Body.String())
 	}
 	reusedDirectory := httptest.NewRecorder()
-	router.ServeHTTP(reusedDirectory, httptest.NewRequest(http.MethodGet, signedConfigsURL(other), nil))
+	router.ServeHTTP(reusedDirectory, signedAgentRequest(http.MethodGet, signedConfigsURL(other), nil))
 	if reusedDirectory.Code != http.StatusConflict {
 		t.Fatalf("不同 Agent 不能复用同一个安装实例：%d %s", reusedDirectory.Code, reusedDirectory.Body.String())
 	}
 	serverURL := strings.Replace(signedConfigsURL(serverAgent), "0123456789abcdef0123456789abcdef", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1)
 	response = httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, serverURL, nil))
+	router.ServeHTTP(response, signedAgentRequest(http.MethodGet, serverURL, nil))
 	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil || len(body.Configs) != 1 {
 		t.Fatalf("服务端 Agent 配置读取失败：%d %s", response.Code, response.Body.String())
 	}
@@ -133,7 +135,7 @@ func TestManagedConfigsOnlyReturnsOwnedAppliedVersions(t *testing.T) {
 	}
 
 	unauthorized := httptest.NewRecorder()
-	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/agent/configs", nil))
+	router.ServeHTTP(unauthorized, signedAgentRequest(http.MethodGet, "/api/agent/configs", nil))
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("未签名请求应被拒绝：status=%d", unauthorized.Code)
 	}
@@ -157,7 +159,7 @@ func TestQueuedStopReportPersistsManualStopped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Agent{}, &model.Node{}, &model.AgentCommand{}); err != nil {
+	if err := db.AutoMigrate(&model.Agent{}, &model.AgentNonce{}, &model.Node{}, &model.AgentCommand{}); err != nil {
 		t.Fatal(err)
 	}
 	sqlDB, err := db.DB()
@@ -179,14 +181,14 @@ func TestQueuedStopReportPersistsManualStopped(t *testing.T) {
 	if err := db.Create(&node).Error; err != nil {
 		t.Fatal(err)
 	}
-	cmd := model.AgentCommand{AgentID: agent.ID, Type: proto.CmdStop, TargetType: proto.TargetNode, TargetID: node.ID}
+	cmd := model.AgentCommand{Status: "sent", AgentID: agent.ID, Type: proto.CmdStop, TargetType: proto.TargetNode, TargetID: node.ID}
 	if err := db.Create(&cmd).Error; err != nil {
 		t.Fatal(err)
 	}
 
 	router := gin.New()
 	router.POST("/api/agent/report", NewAgentHandler(nil).Report)
-	request := httptest.NewRequest(http.MethodPost, strings.Replace(signedConfigsURL(agent), "/configs?", "/report?", 1),
+	request := signedAgentRequest(http.MethodPost, strings.Replace(signedConfigsURL(agent), "/configs?", "/report?", 1),
 		strings.NewReader(`{"commandId":1,"ok":true,"message":"已停止"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -201,4 +203,24 @@ func TestQueuedStopReportPersistsManualStopped(t *testing.T) {
 	if !saved.ManualStopped {
 		t.Fatal("排队的停止指令完成后未保存手动停止状态")
 	}
+}
+
+func signedAgentRequest(method, path string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, path, body)
+	q := req.URL.Query()
+	key := q.Get("nodeKey")
+	if key == "" {
+		return req
+	}
+	var a model.Agent
+	if database.DB.Where("node_key = ?", key).First(&a).Error != nil {
+		return req
+	}
+	raw, _ := io.ReadAll(req.Body)
+	req.Body = io.NopCloser(strings.NewReader(string(raw)))
+	req.URL.RawQuery = ""
+	if err := proto.AuthorizeRequest(req, a.Secret, key, q.Get("instanceId"), q.Get("hostId"), q.Get("role"), raw); err != nil {
+		panic(err)
+	}
+	return req
 }

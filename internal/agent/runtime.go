@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"dfpanel/internal/distrib"
+	"dfpanel/internal/logutil"
 )
 
 // Spec 描述一个被托管的 frp 进程（或容器）
@@ -20,8 +21,8 @@ type Spec struct {
 	BinPath string
 	Image   string
 	// ConfigPath 配置文件的路径：Agent 自己读写用它，docker 运行时会被拷进容器
-	ConfigPath    string
-	LogPath       string
+	ConfigPath string
+	LogPath    string
 	// PidPath 子进程 pid 文件：Agent 重启后据此接管仍在运行的实例（docker 运行时不用）
 	PidPath       string
 	ContainerName string
@@ -67,7 +68,7 @@ type Controller struct {
 	mu      sync.Mutex
 	cmd     *exec.Cmd
 	exited  bool
-	logFile *os.File
+	logFile *logutil.File
 	// gen 进程代次：只用于区分「当前这一代进程」的退出事件，
 	// 避免旧进程的 Wait 返回后把刚启动的新进程误标为已退出
 	gen int
@@ -102,7 +103,7 @@ func (c *Controller) startProcess() error {
 		return fmt.Errorf("未找到配置文件 %s：%w", c.spec.ConfigPath, err)
 	}
 
-	f, err := os.OpenFile(c.spec.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := logutil.Open(c.spec.LogPath)
 	if err != nil {
 		return fmt.Errorf("打开日志文件失败：%w", err)
 	}
@@ -114,8 +115,8 @@ func (c *Controller) startProcess() error {
 	}
 
 	cmd := exec.Command(c.spec.BinPath, "-c", c.spec.ConfigPath)
-	cmd.Stdout = f
-	cmd.Stderr = f
+	cmd.Stdout = f.File
+	cmd.Stderr = f.File
 	if err := cmd.Start(); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("启动 %s 失败：%w%s", c.spec.Kind, err, distrib.ExecHint(err))
@@ -197,7 +198,7 @@ func (c *Controller) startDocker() error {
 // 刻意不挂载任何文件：底座镜像里没有 frp，二进制与配置都在 create 之后用 docker cp 拷进去，
 // 因此容器内用的是固定路径（见 ContainerBinaryInContainer / ContainerConfigPath）。
 func dockerCreateArgs(spec Spec, image string, hostNetwork bool) []string {
-	args := []string{"create", "--name", spec.ContainerName, "--restart", "unless-stopped"}
+	args := []string{"create", "--name", spec.ContainerName, "--restart", "unless-stopped", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3"}
 	if hostNetwork {
 		args = append(args, "--network", "host")
 	}
@@ -225,6 +226,14 @@ func (c *Controller) Adopt() bool {
 	}
 
 	c.mu.Lock()
+	if c.logFile == nil {
+		f, err := logutil.Open(c.spec.LogPath)
+		if err != nil {
+			c.mu.Unlock()
+			return false
+		}
+		c.logFile = f
+	}
 	c.adoptedPid = pid
 	c.exited = false
 	c.mu.Unlock()
@@ -245,6 +254,10 @@ func (c *Controller) Stop() error {
 	c.mu.Lock()
 	if c.adoptedPid > 0 {
 		pid := c.adoptedPid
+		if c.logFile != nil {
+			c.logFile.Close()
+			c.logFile = nil
+		}
 		c.adoptedPid = 0
 		c.mu.Unlock()
 		_ = killProcess(pid)

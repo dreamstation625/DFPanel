@@ -14,7 +14,7 @@ type Agent struct {
 
 	// NodeKey 安装令牌（公开），Secret 签名密钥（不出网，仅安装命令中出现一次）
 	NodeKey string `gorm:"uniqueIndex;size:64;not null" json:"nodeKey"`
-	Secret  string `gorm:"size:128;not null" json:"secret"`
+	Secret  string `gorm:"size:128;not null" json:"-"`
 
 	// Roles 只能是 frps 或 frpc；一条 Agent 记录只代表一个安装实例。
 	Roles      string `gorm:"size:64;default:frpc" json:"roles"`
@@ -54,9 +54,9 @@ func (a *Agent) HasRole(role string) bool {
 // ConfigVersion 每次下发配置的留痕，是 Agent 回滚与面板「一键回退」的依据
 type ConfigVersion struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
-	TargetType string    `gorm:"size:16;index:idx_cfg_target" json:"targetType"` // server / node
-	TargetID   uint      `gorm:"index:idx_cfg_target" json:"targetId"`
-	Version    int       `json:"version"`
+	TargetType string    `gorm:"size:16;index:idx_cfg_target;uniqueIndex:idx_cfg_version" json:"targetType"` // server / node
+	TargetID   uint      `gorm:"index:idx_cfg_target;uniqueIndex:idx_cfg_version" json:"targetId"`
+	Version    int       `gorm:"uniqueIndex:idx_cfg_version" json:"version"`
 	Checksum   string    `gorm:"size:64" json:"checksum"`
 	Content    string    `gorm:"type:text" json:"content"`
 	Status     string    `gorm:"size:32;default:pending" json:"status"` // pending / applied / failed / rolled_back
@@ -66,20 +66,22 @@ type ConfigVersion struct {
 
 // AgentCommand 面板下发给 Agent 的指令；Agent 离线时排队，上线后补发
 type AgentCommand struct {
-	ID         uint   `gorm:"primaryKey" json:"id"`
-	AgentID    uint   `gorm:"index" json:"agentId"`
-	Type       string `gorm:"size:32" json:"type"` // apply / start / stop / restart / unassign / log / rollback
-	TargetType string `gorm:"size:16" json:"targetType"`
-	TargetID   uint   `json:"targetId"`
-	Payload    string `gorm:"type:text" json:"payload"` // apply / rollback 时为配置全文
-	Version    int    `json:"version"`
-	Flags      string `gorm:"size:256" json:"flags"` // 附带元信息，例如 apply 时的自动启动开关
-	TimeoutMs  int    `json:"timeoutMs"`
+	ID              uint   `gorm:"primaryKey" json:"id"`
+	AgentID         uint   `gorm:"index" json:"agentId"`
+	Type            string `gorm:"size:32" json:"type"` // apply / start / stop / restart / unassign / log / rollback
+	TargetType      string `gorm:"size:16" json:"targetType"`
+	TargetID        uint   `json:"targetId"`
+	Payload         string `gorm:"type:text" json:"payload"` // apply / rollback 时为配置全文
+	Version         int    `json:"version"`
+	Flags           string `gorm:"size:256" json:"flags"` // 附带元信息，例如 apply 时的自动启动开关
+	TimeoutMs       int    `json:"timeoutMs"`
+	DeliveryVersion int    `gorm:"default:0" json:"-"` // v2 才具备持久化执行收据
 
-	Status    string     `gorm:"size:32;default:pending" json:"status"` // pending / sent / done / failed
-	Result    string     `gorm:"size:1024" json:"result"`
-	SentAt    *time.Time `json:"sentAt"`
-	DoneAt    *time.Time `json:"doneAt"`
-	CreatedAt time.Time  `json:"createdAt"`
-	UpdatedAt time.Time  `json:"updatedAt"`
+	Status     string     `gorm:"size:32;default:pending" json:"status"` // pending / sent / done / failed
+	ResultData string     `gorm:"type:text" json:"-"`
+	Result     string     `gorm:"size:1024" json:"result"`
+	SentAt     *time.Time `json:"sentAt"`
+	DoneAt     *time.Time `json:"doneAt"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
 }

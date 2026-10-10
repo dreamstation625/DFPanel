@@ -234,51 +234,25 @@ dfpanel -agent-image myrepo/dfpanel-agent:0.2.0   # 生成安装命令时使用�
 
 ### 6.1 版本号与镜像发布
 
-面板版本以根目录 `VERSION` 为准；Agent 版本以 `VERSION.agent` 为准，两者可独立发布。预发布版本号可以带 `-beta.N` 后缀，实际版本请直接查看这两个文件。
+面板正式目标版本保存在根目录 `VERSION`，Agent 保存在 `VERSION.agent`，格式为 `x.y.z`。本地构建默认读取文件；CI 按分支决定发布渠道，不需要在合并时删除预发布后缀。
 
-| 形式 | 示例 | 镜像标签 | `latest` |
+| 来源 | 二进制版本示例 | GitHub Release | Docker 标签 |
 |---|---|---|---|
-| 正式版本 | `0.0.1` | `0.0.1`、`v0.0.1` | 更新 |
-| 预发布 | `0.0.1-beta`、`0.0.1-beta.2`、`0.0.1-beta.02`、`0.0.1-rc.1` | `0.0.1-beta.02`、`v0.0.1-beta.02` | 不动 |
+| 推送 `dev` | `0.0.3-pre.1791590400.g0123456789ab` | Pre-release，不设为 Latest | 精确版本及 `pre`，不更新 `latest` |
+| 合并 / 推送 `main` | `0.0.3` | 正式版，设为 Latest | 精确版本及 `latest` |
+| 手动触发 | 取决于所选 `dev` / `main` | 同上 | 同上 |
+| tag 或其它分支 | 不发布 | 不发布 | 不发布 |
 
-`VERSION` 会在 CI 的 `verify` 任务里做格式校验（`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$`），格式不符直接失败，避免打出非法镜像标签。
+`pre.<提交时间戳>.g<提交前12位>` 使 Release、镜像、内置 Agent 和全平台包在同一提交上使用一致版本，并让版本检测按提交时间排序。Agent 的目标版本仍可独立设置；同一个正式版本号不能用于另一个提交，后续正式发布必须先提升版本号。手动选择其它分支会在校验阶段失败。推送 tag 不再触发第二次发布。
 
-注意 `0.0.1-beta.02` 不是严格 SemVer（前导零的数字标识不合法，`beta.2` 才合法），所以 Docker 官方 `metadata-action` 的 `type=semver` 会跳过这类版本号；镜像的版本标签由 `type=raw,value=<VERSION>` 兜底，标签内容与 `VERSION` 完全一致。
-
-| 位置 | 注入方式 | 查看方式 |
-|---|---|---|
-| 面板二进制 | `build.ps1` / `build.sh` 读取 `VERSION`，`-ldflags "-X main.version=<ver>"` | `dfpanel -version`、启动日志、侧边栏底部 |
-| Agent 二进制 | 构建脚本读取 `VERSION.agent` 并注入 `agent.Version` | 「Agent 管理」列表的版本列（随心跳上报） |
-| 面板 / Agent 镜像 | 分别使用 `VERSION` / `VERSION.agent` 构建对应程序 | `docker image inspect`、`dfpanel -version` |
-
-未注入时面板与 Agent 的版本均为 `dev`。面板版本号通过 `GET /api/init-status` 返回，前端在侧边栏底部展示。
-
-镜像发布由 `.github/workflows/docker.yml` 完成：
-
-| 触发 | 行为 |
-|---|---|
-| push `main` 且改动 `VERSION` 或 workflow 文件 | 构建并推送 `linux/amd64` + `linux/arm64` |
-| 推送 `v*` tag | 校验 tag 与 `VERSION` 一致后再推送，附带版本标签 |
-| `workflow_dispatch` | 手动强制构建 |
+两条 workflow 都执行发布策略测试、Go 回归测试及静态检查、前端类型检查和生产构建；检查通过后才上传 / 推送。Release 还需要全部平台编译及 Agent 全平台包构建成功。镜像构建使用 `PANEL_VERSION` / `AGENT_VERSION` 参数注入 CI 版本，面板镜像中的 Agent 版本清单与程序一致。
 
 - 镜像名：`<DOCKERHUB_USERNAME>/dfpanel`、`<DOCKERHUB_USERNAME>/dfpanel-agent`
-- 凭据：仓库 Environment `DOCKERHUB` 的 `DOCKERHUB_USERNAME`（variable）与 `DOCKERHUB_TOKEN`（secret）
-- 推送前会先在 `verify` 任务里编译并 `go vet`，版本号不一致或格式非法直接失败
-- `latest` 是否更新由 `verify` 输出决定（仅正式版本 + 默认分支或正式 tag），`metadata-action` 的自动 latest 已关闭
+- 镜像凭据：仓库 Environment `DOCKERHUB` 的 `DOCKERHUB_USERNAME`（variable）与 `DOCKERHUB_TOKEN`（secret）；该 Environment 需允许 `dev` 部署。
+- Release 使用 workflow 的 `contents: write` 权限，发布 tag 固定指向本次提交。
+- 未注入版本时程序显示 `dev`；面板版本由 `GET /api/init-status` 返回，Agent 版本随心跳上报。
 
-发布新版本：
-
-```bash
-# 预发布：只推版本标签，latest 保持稳定版
-echo "0.0.2-beta" > VERSION
-git add VERSION && git commit -m "chore: 0.0.2-beta"
-git push origin main
-
-# 正式版：打 tag 一并推送
-echo "0.0.2" > VERSION
-git add VERSION && git commit -m "chore: 升级版本号至 0.0.2"
-git tag v0.0.2 && git push origin main --tags
-```
+流程为：修复提交到 `dev` → 获取预发布产物 → 验证真实部署 → 确认通过后合并到 `main` → 正式发布。预发布验证失败时继续修复 `dev`，不合并。操作步骤见 [dev 与正式版本发布流程](dev-发布流程.md)。
 
 镜像不在 Docker Hub 时，用 `-agent-image` / `DFPANEL_AGENT_IMAGE` 指定，面板生成的 docker run / compose 安装命令会随之更新。
 

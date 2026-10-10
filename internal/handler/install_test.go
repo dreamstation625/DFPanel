@@ -2,6 +2,8 @@ package handler
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/gin-gonic/gin"
 
@@ -198,7 +201,7 @@ func TestInstallCommandsCarryFrpVersion(t *testing.T) {
 	if strings.Contains(res.Compose, "DFPANEL_HOST_DATA_DIR") {
 		t.Errorf("compose 不该出现宿主数据目录（容器内的文件用 docker cp 送）：%s", res.Compose)
 	}
-	if !strings.Contains(res.UninstallBinary, "--uninstall --instance KEY") || strings.Contains(res.UninstallBinary, "SECRET") {
+	if !strings.Contains(res.UninstallBinary, "--uninstall --instance 'KEY'") || strings.Contains(res.UninstallBinary, "SECRET") {
 		t.Errorf("Linux 卸载命令应定位实例且不包含签名密钥：%s", res.UninstallBinary)
 	}
 	if !strings.Contains(res.UninstallDocker, "docker rm -f dfpanel-agent-KEY") ||
@@ -211,13 +214,15 @@ func TestInstallCommandsCarryFrpVersion(t *testing.T) {
 	}
 
 	winRes := h.buildInstallCommands("http://panel:7226", a, "windows", "process")
+	winRes.Binary = decodePSCommand(t, winRes.Binary)
+	winRes.UninstallBinary = decodePSCommand(t, winRes.UninstallBinary)
 	if !strings.Contains(winRes.Binary, "-FrpVersion 0.71.0") {
 		t.Errorf("Windows 安装命令应带上版本：%s", winRes.Binary)
 	}
 	if winRes.Docker != "" || winRes.Compose != "" {
 		t.Errorf("Windows 安装命令不应提供未经验证的 Docker 模式：%+v", winRes)
 	}
-	if !strings.Contains(winRes.UninstallBinary, "-Uninstall -Instance KEY") ||
+	if !strings.Contains(winRes.UninstallBinary, "-Uninstall -Instance 'KEY'") ||
 		strings.Contains(winRes.UninstallBinary, "SECRET") || winRes.UninstallDocker != "" || winRes.UninstallCompose != "" {
 		t.Errorf("Windows 应只提供不含密钥的脚本卸载命令：%+v", winRes)
 	}
@@ -231,4 +236,21 @@ func TestInstallCommandsCarryFrpVersion(t *testing.T) {
 	if strings.Contains(plain.Docker, "DFPANEL_FRPVERSION") {
 		t.Errorf("未设置版本时不该出现版本环境变量：%s", plain.Docker)
 	}
+}
+
+func decodePSCommand(t *testing.T, s string) string {
+	t.Helper()
+	parts := strings.Split(s, "-EncodedCommand ")
+	if len(parts) != 2 {
+		t.Fatal("未编码的 PowerShell 命令")
+	}
+	b, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	words := make([]uint16, len(b)/2)
+	for i := range words {
+		words[i] = binary.LittleEndian.Uint16(b[i*2:])
+	}
+	return string(utf16.Decode(words))
 }

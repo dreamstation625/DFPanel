@@ -8,14 +8,15 @@ import (
 
 // Config 面板全局配置
 type Config struct {
-	Listen         string // 面板监听地址，如 :7226
-	DataDir        string // 数据目录（sqlite、frps 配置与日志）
-	JWTSecret      string // JWT 签名密钥
-	TokenExpireHrs int    // 登录有效期（小时）
-	PublicURL      string // 面板对外访问地址，用于生成 Agent 安装命令与 frpc 连接地址
-	AgentImage     string // 生成 Docker 安装命令时使用的 Agent 镜像
+	Listen          string // 面板监听地址，如 :7226
+	DataDir         string // 数据目录（sqlite、frps 配置与日志）
+	JWTSecret       string // JWT 签名密钥
+	TokenExpireHrs  int    // 登录有效期（小时）
+	PublicURL       string // 面板对外访问地址，用于生成 Agent 安装命令与 frpc 连接地址
+	AgentImage      string // 生成 Docker 安装命令时使用的 Agent 镜像
 	FRPDownloadBase string // frp 二进制下载地址模板（可指向镜像源），设置页可覆盖
-	Version        string // 面板版本号（构建时经 ldflags 注入，仅用于展示）
+	TrustedProxies  string // 可信反向代理 CIDR，逗号分隔，默认不信任
+	Version         string // 面板版本号（构建时经 ldflags 注入，仅用于展示）
 }
 
 // DefaultAgentImage 默认 Agent 镜像（与 CI 推送的镜像保持一致）
@@ -32,11 +33,12 @@ func Load() *Config {
 	flag.StringVar(&cfg.JWTSecret, "jwt-secret", os.Getenv("DFPANEL_JWT_SECRET"), "JWT 密钥（留空自动生成并持久化）")
 	flag.IntVar(&cfg.TokenExpireHrs, "token-expire", 24, "登录有效期（小时）")
 	flag.StringVar(&cfg.PublicURL, "public-url", envOr("DFPANEL_PUBLIC_URL", ""),
-		"面板对外访问地址（如 http://1.2.3.4:7226），留空时按请求地址推断")
+		"面板对外访问地址（如 http://1.2.3.4:7226），生成安装命令时必须显式配置")
 	flag.StringVar(&cfg.AgentImage, "agent-image", envOr("DFPANEL_AGENT_IMAGE", DefaultAgentImage),
 		"生成 Docker 安装命令时使用的 Agent 镜像")
 	flag.StringVar(&cfg.FRPDownloadBase, "frp-download-base", envOr("DFPANEL_FRP_DOWNLOAD_BASE", ""),
 		"frp 二进制下载地址模板，支持 {version} {asset} {os} {arch} 占位符（可指向镜像源；设置页中可覆盖）")
+	flag.StringVar(&cfg.TrustedProxies, "trusted-proxies", os.Getenv("DFPANEL_TRUSTED_PROXIES"), "可信反向代理 IP/CIDR，逗号分隔（默认不信任）")
 	flag.Parse()
 
 	if abs, err := filepath.Abs(cfg.DataDir); err == nil {

@@ -43,7 +43,7 @@ RUN set -eux; \
 # 若本地 Go 版本与 go.mod 不一致导致镜像不存在，可把此处改成 golang:alpine
 # 在构建机架构上编译，再用 GOOS/GOARCH 交叉编译到目标架构（CGO 已关闭），
 # 这样 arm64 镜像不需要经过 QEMU 模拟，构建时间从小时级降到分钟级。
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS server
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine AS server
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN apk add --no-cache git
@@ -52,6 +52,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /web/dist ./web/dist
+# CI 传入分支对应版本；本地构建默认读取版本文件。
+ARG PANEL_VERSION
+ARG AGENT_VERSION
+RUN if [ -n "$PANEL_VERSION" ]; then printf '%s\n' "$PANEL_VERSION" > VERSION; fi; \
+    if [ -n "$AGENT_VERSION" ]; then printf '%s\n' "$AGENT_VERSION" > VERSION.agent; fi
 # 版本号取自根目录 VERSION 文件，注入二进制
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags "-X main.version=$(tr -d '[:space:]' < VERSION)" -o /out/dfpanel .
@@ -79,7 +84,7 @@ ENV DFPANEL_LISTEN=:7226 \
 WORKDIR /app
 COPY --from=server /out/dfpanel /usr/local/bin/dfpanel
 COPY --from=server /out/agent/ /usr/local/share/dfpanel/agent/
-COPY VERSION.agent /usr/local/share/dfpanel/agent/VERSION.agent
+COPY --from=server /src/VERSION.agent /usr/local/share/dfpanel/agent/VERSION.agent
 COPY --from=frp /out/frps /usr/local/bin/frps
 VOLUME ["/data"]
 # 7226 面板 / 7000 frps / 7500 dashboard / 80,443 vhost（host 网络时无需映射）

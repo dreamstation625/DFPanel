@@ -1,61 +1,67 @@
 package middleware
 
 import (
+	"crypto/rand"
+	"dfpanel/internal/database"
+	"dfpanel/internal/model"
+	"encoding/hex"
+	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 )
 
-// Claims JWT 载荷
 type Claims struct {
 	UserID   uint   `json:"uid"`
 	Username string `json:"username"`
 	jwt.RegisteredClaims
 }
 
-// GenerateToken 签发管理面令牌
 func GenerateToken(secret string, expireHours int, uid uint, username string) (string, error) {
 	if expireHours <= 0 {
 		expireHours = 24
 	}
-	claims := Claims{
-		UserID:   uid,
-		Username: username,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(expireHours) * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    "dfpanel",
-		},
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+	id := hex.EncodeToString(b)
+	expires := time.Now().Add(time.Duration(expireHours) * time.Hour)
+	claims := Claims{UserID: uid, Username: username, RegisteredClaims: jwt.RegisteredClaims{ID: id, ExpiresAt: jwt.NewNumericDate(expires), IssuedAt: jwt.NewNumericDate(time.Now()), Issuer: "dfpanel"}}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+	if err != nil {
+		return "", err
+	}
+	if err := database.DB.Create(&model.AuthSession{ID: id, UserID: uid, ExpiresAt: expires}).Error; err != nil {
+		return "", err
+	}
+	database.DB.Where("expires_at < ?", time.Now()).Delete(&model.AuthSession{})
+	return token, nil
 }
-
-// JWT 管理面鉴权中间件
 func JWT(secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := c.GetHeader("Authorization")
-		tokenStr := strings.TrimSpace(strings.TrimPrefix(raw, "Bearer"))
-		if tokenStr == "" {
-			tokenStr = c.Query("token")
-		}
-		if tokenStr == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "未登录"})
+		if !strings.HasPrefix(raw, "Bearer ") {
+			c.AbortWithStatusJSON(401, gin.H{"error": "未登录"})
 			return
 		}
-
 		claims := &Claims{}
-		if _, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
-			return []byte(secret), nil
-		}); err != nil {
+		_, err := jwt.ParseWithClaims(strings.TrimSpace(strings.TrimPrefix(raw, "Bearer ")), claims, func(t *jwt.Token) (interface{}, error) { return []byte(secret), nil }, jwt.WithValidMethods([]string{"HS256"}), jwt.WithIssuer("dfpanel"), jwt.WithExpirationRequired())
+		var count int64
+		if err != nil || claims.ID == "" || claims.UserID == 0 {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "登录已失效，请重新登录"})
 			return
 		}
-
-		c.Set("uid", claims.UserID)
-		c.Set("username", claims.Username)
+		err = database.DB.Model(&model.AuthSession{}).Where("id = ? AND user_id = ? AND expires_at > ?", claims.ID, claims.UserID, time.Now()).Count(&count).Error
+		var user model.User
+		if err != nil || count != 1 || database.DB.First(&user, claims.UserID).Error != nil {
+			c.AbortWithStatusJSON(401, gin.H{"error": "登录已失效，请重新登录"})
+			return
+		}
+		c.Set("uid", user.ID)
+		c.Set("username", user.Username)
+		c.Set("sessionId", claims.ID)
 		c.Next()
 	}
 }

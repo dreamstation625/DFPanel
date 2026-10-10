@@ -15,7 +15,7 @@
 
 # ---------- 编译 Agent ----------
 # 在构建机架构上交叉编译到目标架构（CGO 关闭），不经过 QEMU 模拟。
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS server
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine AS server
 RUN apk add --no-cache git
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -23,6 +23,8 @@ RUN go mod download
 COPY . .
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
+ARG AGENT_VERSION
+RUN if [ -n "$AGENT_VERSION" ]; then printf '%s\n' "$AGENT_VERSION" > VERSION.agent; fi
 # Agent 版本取自 VERSION.agent，没有该文件时跟随面板版本 VERSION
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags "-X dfpanel/internal/agent.Version=$(if [ -s VERSION.agent ]; then cat VERSION.agent; else cat VERSION; fi)" -o /out/agent ./cmd/agent

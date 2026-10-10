@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -30,11 +31,13 @@ type Agent struct {
 	cfg    *Config
 	client *Client
 
-	mu      sync.Mutex
-	ctrls   map[string]*Controller
-	targets map[string]Target
-	curV    map[string]int
-	curS    map[string]string
+	execMu      sync.Mutex
+	wsConnected atomic.Bool
+	mu          sync.Mutex
+	ctrls       map[string]*Controller
+	targets     map[string]Target
+	curV        map[string]int
+	curS        map[string]string
 }
 
 // New 创建 Agent
@@ -67,9 +70,12 @@ func (a *Agent) Run() error {
 	}
 	a.bootstrap()
 
+	// 持续领取积压命令，即使长连接一直正常也执行；WS 与 HTTP 共用持久化收据。
+	go a.pollLoop(nil)
 	backoff := time.Second
 	for {
 		if !configsSynced {
+			a.execMu.Lock()
 			if err := a.syncMissingConfigs(); err != nil {
 				log.Printf("从面板恢复缺失配置失败（将重试）：%v", err)
 			} else {
@@ -77,6 +83,7 @@ func (a *Agent) Run() error {
 			}
 			// 即使个别配置恢复失败，也让本轮已恢复的实例按启动状态运行。
 			a.bootstrap()
+			a.execMu.Unlock()
 		}
 		conn, err := a.client.DialWS()
 		if err == nil {
@@ -97,9 +104,6 @@ func (a *Agent) Run() error {
 			log.Printf("连接面板失败（%v），转为轮询模式", err)
 		}
 
-		// 轮询兼顾长连接中断期间积压的指令
-		a.pollOnce()
-
 		time.Sleep(backoff)
 		if backoff < maxBackoff {
 			backoff *= 2
@@ -109,7 +113,22 @@ func (a *Agent) Run() error {
 
 // serveWS 处理面板下发的实时指令，并定时上报心跳
 func (a *Agent) serveWS(conn *websocket.Conn) error {
+	a.wsConnected.Store(true)
+	defer a.wsConnected.Store(false)
 	defer conn.Close()
+	conn.SetReadLimit(4 << 20)
+	_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+	var writeMu sync.Mutex
+	write := func(env proto.Envelope) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		err := conn.WriteJSON(env)
+		if err != nil {
+			conn.Close()
+		}
+		return err
+	}
 
 	stop := make(chan struct{})
 	defer close(stop)
@@ -120,7 +139,7 @@ func (a *Agent) serveWS(conn *websocket.Conn) error {
 		for {
 			select {
 			case <-ticker.C:
-				if err := conn.WriteJSON(a.heartbeatEnvelope()); err != nil {
+				if err := write(a.heartbeatEnvelope()); err != nil {
 					return
 				}
 			case <-stop:
@@ -134,6 +153,7 @@ func (a *Agent) serveWS(conn *websocket.Conn) error {
 		if err := conn.ReadJSON(&env); err != nil {
 			return err
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		switch env.Type {
 		case proto.MsgCommand:
 			var cmd proto.CommandData
@@ -141,28 +161,33 @@ func (a *Agent) serveWS(conn *websocket.Conn) error {
 				log.Printf("解析指令失败：%v", err)
 				continue
 			}
-			res := a.handleCommand(cmd)
+			res := a.executeCommand(cmd)
+			// 即使 WS 响应丢失，也通过 HTTP 留存结果。失败由轮询租约重投时重发收据。
+			_ = a.client.Report(cmd.CommandID, res)
 			data, _ := json.Marshal(res)
-			_ = conn.WriteJSON(proto.Envelope{Type: proto.MsgCommandResult, ID: env.ID, Data: data})
+			if err := write(proto.Envelope{Type: proto.MsgCommandResult, ID: env.ID, Data: data}); err != nil {
+				return err
+			}
 		case proto.MsgPing:
-			_ = conn.WriteJSON(proto.Envelope{Type: proto.MsgPong})
+			if err := write(proto.Envelope{Type: proto.MsgPong}); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-// pollOnce 拉取并执行积压指令，同时上报心跳
-func (a *Agent) pollOnce() {
+// pollCommands 持续领取有序队列中的命令，执行结果通过 HTTP 确认。
+func (a *Agent) pollCommands() {
 	cmds, err := a.client.PullCommands()
 	if err != nil {
 		return
 	}
 	for _, cmd := range cmds {
-		res := a.handleCommand(cmd)
+		res := a.executeCommand(cmd)
 		if err := a.client.Report(cmd.CommandID, res); err != nil {
 			log.Printf("上报指令(%d)结果失败：%v", cmd.CommandID, err)
 		}
 	}
-	_ = a.client.Heartbeat(a.heartbeatPayload())
 }
 
 // handleCommand 执行单条指令
@@ -270,7 +295,8 @@ func (a *Agent) handleCommand(cmd proto.CommandData) proto.ResultData {
 // 回滚同样走完整的校验与健康探测流程，失败会再次回退到回滚前的配置。
 func (a *Agent) handleRollback(t Target, cmd proto.CommandData) proto.ResultData {
 	var req struct {
-		TargetVersion int `json:"targetVersion"`
+		TargetVersion int    `json:"targetVersion"`
+		Content       string `json:"content"`
 	}
 	if cmd.Payload != "" {
 		_ = json.Unmarshal([]byte(cmd.Payload), &req)
@@ -286,9 +312,13 @@ func (a *Agent) handleRollback(t Target, cmd proto.CommandData) proto.ResultData
 		}
 	}
 
-	content, err := a.readHistory(t, req.TargetVersion)
-	if err != nil {
-		return proto.ResultData{Message: err.Error()}
+	content := req.Content
+	if content == "" {
+		var err error
+		content, err = a.readHistory(t, req.TargetVersion)
+		if err != nil {
+			return proto.ResultData{Message: err.Error()}
+		}
 	}
 
 	out := a.ApplyConfig(t, content, cmd.Version)
@@ -298,6 +328,7 @@ func (a *Agent) handleRollback(t Target, cmd proto.CommandData) proto.ResultData
 		Version:    out.Version,
 		Checksum:   out.Checksum,
 		Unverified: out.Unverified,
+		RolledBack: out.RolledBack,
 		Running:    a.controller(t).Running(),
 	}
 }
@@ -468,4 +499,28 @@ func targetKey(t Target) string {
 // DataDir 暴露数据目录，便于命令行查看
 func (a *Agent) DataDir() string {
 	return filepath.Clean(a.cfg.DataDir)
+}
+
+// pollLoop 与长连接生命周期独立；stop 用于测试和有序退出，nil 表示持续运行。
+func (a *Agent) pollLoop(stop <-chan struct{}) {
+	nextHeartbeat := time.Now()
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		a.pollCommands()
+		if !a.wsConnected.Load() && time.Now().After(nextHeartbeat) {
+			_ = a.client.Heartbeat(a.heartbeatPayload())
+			nextHeartbeat = time.Now().Add(heartbeatInterval)
+		}
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-stop:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 }

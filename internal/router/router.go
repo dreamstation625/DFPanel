@@ -1,6 +1,7 @@
 package router
 
 import (
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -25,7 +26,18 @@ func Setup(cfg *config.Config) *gin.Engine {
 	hub := agenthub.New()
 
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery())
+	var trusted []string
+	if cfg.TrustedProxies != "" {
+		trusted = strings.Split(cfg.TrustedProxies, ",")
+	}
+	if err := r.SetTrustedProxies(trusted); err != nil {
+		panic("可信代理配置不合法：" + err.Error())
+	}
+	gin.DefaultWriter = log.Writer()
+	r.Use(gin.LoggerWithFormatter(func(p gin.LogFormatterParams) string {
+		path := strings.SplitN(p.Path, "?", 2)[0]
+		return fmt.Sprintf("%s %s %d %s\n", p.Method, path, p.StatusCode, p.Latency)
+	}), gin.Recovery(), middleware.Security())
 
 	authHandler := handler.NewAuthHandler(cfg)
 	serverHandler := handler.NewServerHandler(mgr, hub)
@@ -63,6 +75,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 		authed.Use(middleware.JWT(cfg.JWTSecret))
 		{
 			authed.GET("/auth/profile", authHandler.Profile)
+			authed.POST("/auth/logout", authHandler.Logout)
 			authed.GET("/program-version/check", handler.ProgramVersionCheck(cfg))
 
 			// 写操作统一使用 POST（兼容性优先，不使用 PUT / DELETE），读操作使用 GET
