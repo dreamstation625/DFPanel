@@ -165,6 +165,8 @@ Windows 脚本会检查二进制是否支持 Windows 服务。若当前 Release 
 3. 打开 `http://<面板地址>:7226`，按初始化页面创建管理员账号。
 4. 在「Agent 管理」按服务端或客户端分别新建 Agent，每个 Agent 绑定一个服务端或节点，再复制页面生成的安装命令到目标机器执行。
 
+登录后可在右上角管理员菜单选择「修改密码」，输入当前密码和新密码。修改成功后，所有设备会退出登录，需要使用新密码重新登录。
+
 也可以修改 [docker-compose.agent.yml](docker-compose.agent.yml) 中的面板地址，在 `.env` 中设置 `DFPANEL_NODE_KEY`、`DFPANEL_NODE_SECRET` 和 `DFPANEL_ROLES` 后启动 Agent：
 
 ```bash

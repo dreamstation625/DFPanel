@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { authApi, programVersionApi, type ProgramVersionStatus } from '@/api'
+import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
 import { DOC_MENU } from '@/utils/docs'
 
 const route = useRoute()
@@ -10,6 +11,7 @@ const router = useRouter()
 
 const active = computed(() => route.path)
 const username = computed(() => localStorage.getItem('dfpanel_user') || 'admin')
+const passwordDialogVisible = ref(false)
 
 // 面板版本号（构建时注入），显示在侧边栏底部
 const panelVersion = ref('')
@@ -71,12 +73,23 @@ function onSelect(index: string) {
 }
 
 async function onCommand(cmd: string) {
+  if (cmd === 'change-password') {
+    passwordDialogVisible.value = true
+    return
+  }
   if (cmd !== 'logout' && cmd !== 'logout-all') return
   await ElMessageBox.confirm('确认退出登录？', '提示', { type: 'warning' })
   await authApi.logout(cmd === 'logout-all')
   localStorage.removeItem('dfpanel_token')
   localStorage.removeItem('dfpanel_user')
   router.push('/login')
+}
+
+function onPasswordChanged() {
+  localStorage.removeItem('dfpanel_token')
+  localStorage.removeItem('dfpanel_user')
+  ElMessage.success('密码已修改，所有设备已退出，请用新密码登录')
+  void router.replace('/login')
 }
 </script>
 
@@ -145,7 +158,8 @@ async function onCommand(cmd: string) {
           </span>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="logout">退出登录</el-dropdown-item>
+              <el-dropdown-item command="change-password">修改密码</el-dropdown-item>
+              <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
               <el-dropdown-item command="logout-all">退出所有设备</el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -155,6 +169,7 @@ async function onCommand(cmd: string) {
         <router-view />
       </el-main>
     </el-container>
+    <ChangePasswordDialog v-model="passwordDialogVisible" @changed="onPasswordChanged" />
   </el-container>
 </template>
 

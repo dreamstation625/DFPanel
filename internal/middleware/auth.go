@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"gorm.io/gorm"
 	"net/http"
 	"strings"
 	"time"
@@ -18,7 +19,8 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-func GenerateToken(secret string, expireHours int, uid uint, username string) (string, error) {
+// GenerateToken 在调用方的事务中保存会话，使密码校验与会话签发保持一致。
+func GenerateToken(db *gorm.DB, secret string, expireHours int, uid uint, username string) (string, error) {
 	if expireHours <= 0 {
 		expireHours = 24
 	}
@@ -33,10 +35,10 @@ func GenerateToken(secret string, expireHours int, uid uint, username string) (s
 	if err != nil {
 		return "", err
 	}
-	if err := database.DB.Create(&model.AuthSession{ID: id, UserID: uid, ExpiresAt: expires}).Error; err != nil {
+	if err := db.Create(&model.AuthSession{ID: id, UserID: uid, ExpiresAt: expires}).Error; err != nil {
 		return "", err
 	}
-	database.DB.Where("expires_at < ?", time.Now()).Delete(&model.AuthSession{})
+	db.Where("expires_at < ?", time.Now()).Delete(&model.AuthSession{})
 	return token, nil
 }
 func JWT(secret string) gin.HandlerFunc {

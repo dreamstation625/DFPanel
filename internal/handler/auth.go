@@ -2,13 +2,14 @@ package handler
 
 import (
 	"errors"
-	"gorm.io/gorm"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
 	"dfpanel/internal/config"
 	"dfpanel/internal/database"
@@ -26,6 +27,9 @@ type loginAttempt struct {
 }
 
 var loginAttempts = map[string]loginAttempt{}
+
+var errPasswordChanged = errors.New("密码已修改，请重新登录")
+var errPasswordSessionExpired = errors.New("登录已失效，请重新登录")
 
 type AuthHandler struct {
 	cfg *config.Config
@@ -116,7 +120,39 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	key := c.ClientIP()
+	key := "login:" + c.ClientIP()
+	if !allowAuthAttempt(c, key) {
+		return
+	}
+	var user model.User
+	if err := database.DB.Where("username = ?", req.Username).First(&user).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
+		return
+	}
+
+	token, err := h.createLoginSession(user)
+	if errors.Is(err, errPasswordChanged) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "签发令牌失败"})
+		return
+	}
+	clearAuthAttempts(key)
+
+	c.JSON(http.StatusOK, gin.H{
+		"token": token,
+		"user":  gin.H{"id": user.ID, "username": user.Username, "role": user.Role},
+	})
+}
+
+// allowAuthAttempt 登录按 IP 限速，修改密码按账号限速；两种操作的计数互不影响。
+func allowAuthAttempt(c *gin.Context, key string) bool {
 	loginMu.Lock()
 	now := time.Now()
 	for k, v := range loginAttempts {
@@ -129,40 +165,120 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		loginMu.Unlock()
 		c.Header("Retry-After", "900")
 		c.JSON(429, gin.H{"error": "尝试过多，请稍后重试"})
-		return
+		return false
 	}
 	if len(loginAttempts) >= 10000 {
 		loginMu.Unlock()
 		c.JSON(429, gin.H{"error": "尝试过多，请稍后重试"})
-		return
+		return false
 	}
 	attempt.Count++
 	attempt.Until = now.Add(15 * time.Minute)
 	loginAttempts[key] = attempt
 	loginMu.Unlock()
-	var user model.User
-	if err := database.DB.Where("username = ?", req.Username).First(&user).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
-		return
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
-		return
-	}
+	return true
+}
 
+func clearAuthAttempts(key string) {
 	loginMu.Lock()
 	delete(loginAttempts, key)
 	loginMu.Unlock()
-	token, err := middleware.GenerateToken(h.cfg.JWTSecret, h.cfg.TokenExpireHrs, user.ID, user.Username)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "签发令牌失败"})
+}
+
+func (h *AuthHandler) createLoginSession(user model.User) (string, error) {
+	var token string
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		var current model.User
+		if err := tx.First(&current, user.ID).Error; err != nil {
+			return err
+		}
+		// bcrypt 校验在事务外完成；重新核对摘要，防止改密码后旧凭据签发新会话。
+		if current.PasswordHash != user.PasswordHash {
+			return errPasswordChanged
+		}
+		var err error
+		token, err = middleware.GenerateToken(tx, h.cfg.JWTSecret, h.cfg.TokenExpireHrs, current.ID, current.Username)
+		return err
+	})
+	return token, err
+}
+
+type changePasswordReq struct {
+	CurrentPassword string `json:"currentPassword" binding:"required,max=64"`
+	NewPassword     string `json:"newPassword" binding:"required,min=6,max=64"`
+}
+
+// ChangePassword POST /api/auth/password 校验当前密码，更新管理员密码并撤销全部会话。
+func (h *AuthHandler) ChangePassword(c *gin.Context) {
+	var req changePasswordReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请填写当前密码，新密码应为 6–64 个字符"})
 		return
 	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"token": token,
-		"user":  gin.H{"id": user.ID, "username": user.Username, "role": user.Role},
+	// bcrypt 最多接受 72 字节；多字节字符仍须满足这个限制。
+	if len(req.NewPassword) > 72 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码不能超过 72 字节，请减少中文或其他多字节字符"})
+		return
+	}
+	var user model.User
+	if err := database.DB.First(&user, c.GetUint("uid")).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取管理员账号失败"})
+		return
+	}
+	if user.Role != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "仅管理员可修改密码"})
+		return
+	}
+	key := "password:" + strconv.FormatUint(uint64(user.ID), 10)
+	if !allowAuthAttempt(c, key) {
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.CurrentPassword)); err != nil {
+		// 当前密码填错不代表登录会话失效，返回 400 让用户留在表单中重试。
+		c.JSON(http.StatusBadRequest, gin.H{"error": "当前密码不正确"})
+		return
+	}
+	if req.NewPassword == req.CurrentPassword {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码不能与当前密码相同"})
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码加密失败"})
+		return
+	}
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&model.AuthSession{}).Where("id = ? AND user_id = ? AND expires_at > ?", c.GetString("sessionId"), user.ID, time.Now()).Count(&count).Error; err != nil {
+			return err
+		}
+		if count != 1 {
+			return errPasswordSessionExpired
+		}
+		// 条件更新拒绝并发覆盖；撤销会话失败时，密码修改也一并回滚。
+		result := tx.Model(&model.User{}).Where("id = ? AND password_hash = ? AND role = ?", user.ID, user.PasswordHash, "admin").Update("password_hash", string(hash))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errPasswordChanged
+		}
+		return tx.Where("user_id = ?", user.ID).Delete(&model.AuthSession{}).Error
 	})
+	if errors.Is(err, errPasswordSessionExpired) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	if errors.Is(err, errPasswordChanged) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "修改密码失败，请稍后重试"})
+		return
+	}
+	clearAuthAttempts(key)
+	c.JSON(http.StatusOK, gin.H{"message": "密码已修改，请重新登录"})
 }
 
 // Profile GET /api/auth/profile 当前用户信息

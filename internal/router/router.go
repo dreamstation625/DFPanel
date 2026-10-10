@@ -76,6 +76,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 		{
 			authed.GET("/auth/profile", authHandler.Profile)
 			authed.POST("/auth/logout", authHandler.Logout)
+			authed.POST("/auth/password", authHandler.ChangePassword)
 			authed.GET("/program-version/check", handler.ProgramVersionCheck(cfg))
 
 			// 写操作统一使用 POST（兼容性优先，不使用 PUT / DELETE），读操作使用 GET

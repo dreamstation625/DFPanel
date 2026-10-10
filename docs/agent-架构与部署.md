@@ -289,6 +289,7 @@ Agent 面（签名鉴权）：`POST /api/agent/register`、`GET /api/agent/confi
 |---|---|---|
 | GET | `/api/init-status` | 是否已初始化 + 面板版本号（免鉴权） |
 | POST | `/api/init`、`/api/auth/login` | 初始化管理员 / 登录（免鉴权） |
+| POST | `/api/auth/password` | 校验当前密码后修改管理员密码，撤销该账号全部登录会话（需登录） |
 | GET | `/api/agents`、`/api/agents/:id` | Agent 列表 / 详情 |
 | POST | `/api/agents` | 创建 Agent |
 | POST | `/api/agents/:id/update` | 更新 Agent |
